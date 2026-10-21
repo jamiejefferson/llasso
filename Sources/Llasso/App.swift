@@ -40,7 +40,8 @@ final class HotKey {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var hotKey: HotKey?
-    private let gesture = GestureTap()
+    private let watcher = DragWatcher()
+    private var offer: Offer?
     private var gestureRetry: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -48,7 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage(systemSymbolName: "lasso", accessibilityDescription: "Llasso")
         let menu = NSMenu()
-        menu.addItem(withTitle: "Draw a box (right-drag, or ⌃⌥S)", action: #selector(draw), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Draw a box   ⌃⌥S", action: #selector(draw), keyEquivalent: "").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Settings…", action: #selector(settings), keyEquivalent: ",").target = self
         menu.addItem(withTitle: "Show history", action: #selector(history), keyEquivalent: "").target = self
@@ -61,15 +62,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { Controller.shared.toggle() }
         }
 
-        // Leave right-clicks alone while a box or prompt is on screen.
-        gesture.shouldIntercept = { [.idle, .answering].contains(Controller.shared.phase) }
-        gesture.onBegan = { Controller.shared.gestureBegan(at: $0) }
-        gesture.onMoved = { Controller.shared.gestureMoved(to: $0) }
-        gesture.onEnded = { Controller.shared.gestureEnded(at: $0) }
+        // Any box-shaped drag offers the Llasso icon where it ended.
+        let offer = Offer()
+        offer.onAccept = { Controller.shared.begin(box: $0) }
+        self.offer = offer
+        watcher.onPress = { [weak self] p in self?.offer?.pressed(at: p) }
+        watcher.onBox = { box, end in
+            guard Controller.shared.phase == .idle,
+                  !Sensitive.isSensitive(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+            else { return }
+            offer.show(box: box, near: end)
+        }
         // The tap needs Accessibility; keep trying until it is granted.
-        if !gesture.start() {
+        if !watcher.start() {
             gestureRetry = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] t in
-                if self?.gesture.start() == true { t.invalidate() }
+                if self?.watcher.start() == true { t.invalidate() }
             }
         }
 
@@ -189,13 +196,13 @@ struct SettingsView: View {
                 permission("Microphone", ok: form.micOK, need: "To talk instead of type") {
                     Task { form.micOK = await VoiceInput.requestMicrophone() }
                 }
-                permission("Accessibility", ok: form.axOK, need: "For the right-drag gesture, and to read the app's file and URL") {
+                permission("Accessibility", ok: form.axOK, need: "For the drag-then-icon gesture, and to read the app's file and URL") {
                     let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
                     _ = AXIsProcessTrustedWithOptions(opts as CFDictionary)
                 }
             }
             Section("Use") {
-                Text("Right-click and drag a box round anything, and talk while you drag. (Or press ⌃⌥S, then drag.) A plain right-click still opens the menu, when you let go. Stop talking and Llasso sends after a second. Or type and press Return. Esc stops or closes.")
+                Text("Drag a box round anything as you normally would. A Llasso icon appears where you let go: rest the pointer on it and talk, or type. Or press ⌃⌥S to draw a box straight away. Stop talking and Llasso sends after a second. Or type and press Return. Esc stops or closes.")
                     .font(.callout)
             }
         }

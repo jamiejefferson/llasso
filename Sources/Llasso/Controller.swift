@@ -27,7 +27,6 @@ final class Controller {
     private var lastPrompt = ""
     private var spoken = false
     private var pointerHeld = false
-    private var gestureWindow: OverlayWindow?
 
     private var keyMonitor: Any?
     private var streamTask: Task<Void, Never>?
@@ -64,32 +63,17 @@ final class Controller {
         if phase == .idle { begin() } else { cancel() }
     }
 
-    /// Right-button gesture: the drag is already under way at `point` (AppKit global).
-    func gestureBegan(at point: CGPoint) {
+    /// From the drag offer: the box is already drawn (AppKit global), so go straight to the prompt.
+    func begin(box: CGRect) {
         begin()
-        guard phase == .selecting, let w = overlay(at: point) else { return }
-        gestureWindow = w
-        w.selectionView.dragBegan(at: local(point, in: w))
-    }
-
-    func gestureMoved(to point: CGPoint) {
-        guard let w = gestureWindow else { return }
-        w.selectionView.dragMoved(to: local(point, in: w))
-    }
-
-    func gestureEnded(at point: CGPoint) {
-        guard let w = gestureWindow else { return }
-        gestureWindow = nil
-        w.selectionView.dragMoved(to: local(point, in: w))
-        w.selectionView.dragEnded()
-    }
-
-    private func overlay(at point: CGPoint) -> OverlayWindow? {
-        overlays.first { $0.frame.contains(point) } ?? overlays.first
-    }
-
-    private func local(_ point: CGPoint, in w: OverlayWindow) -> CGPoint {
-        CGPoint(x: point.x - w.frame.minX, y: point.y - w.frame.minY)
+        guard phase == .selecting,
+              let w = overlays.first(where: { $0.frame.intersects(box) && $0.frame.contains(CGPoint(x: box.midX, y: box.midY)) })
+                ?? overlays.first(where: { $0.frame.intersects(box) })
+        else { return }
+        let local = box.intersection(w.frame).offsetBy(dx: -w.frame.minX, dy: -w.frame.minY)
+        w.selectionView.show(selection: local)
+        startVoice()
+        selectionMade(local, in: w)
     }
 
     func begin() {
@@ -160,6 +144,10 @@ final class Controller {
         pointerHeld = true
         for o in overlays where o.selectionView.mode == .selecting { o.selectionView.clear() }
         pillPanel?.orderOut(nil)
+        startVoice()
+    }
+
+    private func startVoice() {
         guard !voice.isRunning else { return }
         Task {
             if !VoiceInput.microphoneAllowed {
@@ -357,7 +345,6 @@ final class Controller {
         cardPanel?.orderOut(nil)
         overlays.forEach { $0.orderOut(nil) }
         overlays.removeAll()
-        gestureWindow = nil
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
         NSCursor.arrow.set()
