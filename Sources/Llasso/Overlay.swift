@@ -69,23 +69,29 @@ final class SelectionView: NSView {
         needsDisplay = true
     }
 
-    override func mouseDown(with event: NSEvent) {
+    override func mouseDown(with event: NSEvent) { dragBegan(at: convert(event.locationInWindow, from: nil)) }
+    override func mouseDragged(with event: NSEvent) { dragMoved(to: convert(event.locationInWindow, from: nil)) }
+    override func mouseUp(with event: NSEvent) { dragEnded() }
+
+    // The drag can come from this view's own mouse events (after the hotkey) or from
+    // the right-button gesture tap, which feeds points in this view's coordinates.
+
+    func dragBegan(at point: CGPoint) {
         guard mode == .selecting else { return }
-        anchor = convert(event.locationInWindow, from: nil)
+        anchor = point
         selection = nil
         onPointerDown?()
         needsDisplay = true
     }
 
-    override func mouseDragged(with event: NSEvent) {
+    func dragMoved(to p: CGPoint) {
         guard mode == .selecting, let anchor else { return }
-        let p = convert(event.locationInWindow, from: nil)
         selection = CGRect(x: min(anchor.x, p.x), y: min(anchor.y, p.y),
                            width: abs(p.x - anchor.x), height: abs(p.y - anchor.y))
         needsDisplay = true
     }
 
-    override func mouseUp(with event: NSEvent) {
+    func dragEnded() {
         guard mode == .selecting else { return }
         anchor = nil
         guard let selection, selection.width >= 12, selection.height >= 12 else {

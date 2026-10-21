@@ -40,13 +40,15 @@ final class HotKey {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var hotKey: HotKey?
+    private let gesture = GestureTap()
+    private var gestureRetry: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installEditMenu()
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage(systemSymbolName: "lasso", accessibilityDescription: "Llasso")
         let menu = NSMenu()
-        menu.addItem(withTitle: "Draw a box   ⌃⌥S", action: #selector(draw), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Draw a box (right-drag, or ⌃⌥S)", action: #selector(draw), keyEquivalent: "").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Settings…", action: #selector(settings), keyEquivalent: ",").target = self
         menu.addItem(withTitle: "Show history", action: #selector(history), keyEquivalent: "").target = self
@@ -57,6 +59,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         hotKey = HotKey(keyCode: UInt32(kVK_ANSI_S), modifiers: UInt32(controlKey | optionKey)) {
             DispatchQueue.main.async { Controller.shared.toggle() }
+        }
+
+        // Leave right-clicks alone while a box or prompt is on screen.
+        gesture.shouldIntercept = { [.idle, .answering].contains(Controller.shared.phase) }
+        gesture.onBegan = { Controller.shared.gestureBegan(at: $0) }
+        gesture.onMoved = { Controller.shared.gestureMoved(to: $0) }
+        gesture.onEnded = { Controller.shared.gestureEnded(at: $0) }
+        // The tap needs Accessibility; keep trying until it is granted.
+        if !gesture.start() {
+            gestureRetry = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] t in
+                if self?.gesture.start() == true { t.invalidate() }
+            }
         }
 
         if !Settings.shared.hasKey || !CGPreflightScreenCaptureAccess() {
@@ -175,13 +189,13 @@ struct SettingsView: View {
                 permission("Microphone", ok: form.micOK, need: "To talk instead of type") {
                     Task { form.micOK = await VoiceInput.requestMicrophone() }
                 }
-                permission("Accessibility", ok: form.axOK, need: "To read the app's file, URL and buttons") {
+                permission("Accessibility", ok: form.axOK, need: "For the right-drag gesture, and to read the app's file and URL") {
                     let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
                     _ = AXIsProcessTrustedWithOptions(opts as CFDictionary)
                 }
             }
             Section("Use") {
-                Text("Press ⌃⌥S, drag a box round anything, and talk while you drag. Stop talking and Llasso sends after a second. Or type and press Return. Esc stops or closes.")
+                Text("Right-click and drag a box round anything, and talk while you drag. (Or press ⌃⌥S, then drag.) A plain right-click still opens the menu, when you let go. Stop talking and Llasso sends after a second. Or type and press Return. Esc stops or closes.")
                     .font(.callout)
             }
         }
