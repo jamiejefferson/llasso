@@ -29,6 +29,7 @@ final class Controller {
     private var pointerHeld = false
 
     private var keyMonitor: Any?
+    private var clickMonitors: [Any] = []
     private var streamTask: Task<Void, Never>?
     private var pauseTimer: Timer?
     private var lastSpeechChange = Date()
@@ -122,11 +123,39 @@ final class Controller {
 
     private func installKeyMonitor() {
         guard keyMonitor == nil else { return }
+        installClickMonitors()
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, event.keyCode == 53 else { return event }   // Esc
             self.escape()
             return nil
         }
+    }
+
+    /// A click anywhere outside the box, the prompt and the card dismisses Llasso.
+    /// The global monitor sees clicks that go to other apps; the local one sees clicks
+    /// on Llasso's own dimmed overlay.
+    private func installClickMonitors() {
+        let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] _ in
+            MainActor.assumeIsolated { self?.clicked(at: NSEvent.mouseLocation) }
+        }) { clickMonitors.append(global) }
+        if let local = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self] event in
+            guard let self else { return event }
+            let window = event.window
+            if window === self.pillPanel || window === self.cardPanel { return event }
+            return self.clicked(at: NSEvent.mouseLocation) ? nil : event
+        }) { clickMonitors.append(local) }
+    }
+
+    /// Returns true if the click dismissed Llasso.
+    @discardableResult
+    private func clicked(at point: CGPoint) -> Bool {
+        guard phase == .prompting || phase == .answering else { return false }
+        if let p = pillPanel, p.isVisible, p.frame.contains(point) { return false }
+        if let c = cardPanel, c.isVisible, c.frame.contains(point) { return false }
+        if phase == .prompting, let box, box.rect.contains(point) { return false }
+        cancel()
+        return true
     }
 
     private func escape() {
@@ -347,6 +376,8 @@ final class Controller {
         overlays.removeAll()
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
+        clickMonitors.forEach(NSEvent.removeMonitor)
+        clickMonitors.removeAll()
         NSCursor.arrow.set()
         if phase != .idle, NSApp.isActive { frontApp?.activate() }
         phase = .idle
