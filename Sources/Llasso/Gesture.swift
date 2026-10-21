@@ -121,15 +121,23 @@ final class DragWatcher {
 }
 
 /// The offer after a box-shaped drag: a faint amber outline of the box and a small Llasso
-/// icon by the release point. Resting the pointer on the icon (or clicking it) opens the prompt.
-/// It goes away after a few seconds, or on the next click elsewhere.
+/// icon by the release point. Resting the pointer on the icon opens the prompt; pressing and
+/// holding it records speech until release, then sends. Once opened, the icon stays beside the
+/// prompt as the hold-to-talk button. Unopened, it goes away after a few seconds or on a click elsewhere.
 @MainActor
 final class Offer {
-    var onAccept: ((CGRect) -> Void)?
+    /// Hover: open the prompt for the box.
+    var onOpen: ((CGRect) -> Void)?
+    /// Press on the icon: open the prompt if needed and start recording.
+    var onHoldBegan: ((CGRect) -> Void)?
+    /// Release after a press: send what was said.
+    var onHoldEnded: (() -> Void)?
 
     private var outline: NSWindow?
     private var icon: NSPanel?
+    private var iconView: OfferIcon?
     private var box: CGRect = .zero
+    private var opened = false
     private var expiry: Timer?
 
     static let lifetime: TimeInterval = 3.5
@@ -138,6 +146,7 @@ final class Offer {
     func show(box: CGRect, near end: CGPoint) {
         dismiss()
         self.box = box
+        opened = false
 
         let o = NSWindow(contentRect: box.insetBy(dx: -3, dy: -3), styleMask: [.borderless], backing: .buffered, defer: false)
         o.isOpaque = false
@@ -163,12 +172,16 @@ final class Offer {
         p.isOpaque = false
         p.backgroundColor = .clear
         p.hasShadow = true
-        p.level = .popUpMenu
+        // Above the dimmed overlay and the prompt, so it stays usable as the talk button.
+        p.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 2)
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         p.isReleasedWhenClosed = false
         let view = OfferIcon(frame: CGRect(x: 0, y: 0, width: s, height: s))
-        view.onActivate = { [weak self] in self?.accept() }
+        view.onHover = { [weak self] in self?.open() }
+        view.onPress = { [weak self] in self?.holdBegan() }
+        view.onRelease = { [weak self] in self?.onHoldEnded?() }
         p.contentView = view
+        iconView = view
         p.alphaValue = 0
         p.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { $0.duration = 0.12; p.animator().alphaValue = 1 }
@@ -179,18 +192,36 @@ final class Offer {
         }
     }
 
-    /// A press anywhere except on the icon withdraws the offer.
+    /// A press anywhere except on the icon withdraws an offer that hasn't been opened.
+    /// Once opened, Llasso's own click handling decides.
     func pressed(at point: CGPoint) {
-        guard let icon, !icon.frame.contains(point) else { return }
+        guard let icon, !opened, !icon.frame.contains(point) else { return }
         dismiss()
     }
 
     var isShowing: Bool { icon != nil }
+    var window: NSWindow? { icon }
 
-    private func accept() {
-        let b = box
-        dismiss()
-        onAccept?(b)
+    func setRecording(_ on: Bool) { iconView?.recording = on }
+
+    private func markOpened() {
+        expiry?.invalidate()
+        expiry = nil
+        outline?.orderOut(nil)
+        outline = nil
+        opened = true
+        iconView?.opened = true
+    }
+
+    private func open() {
+        guard !opened else { return }
+        markOpened()
+        onOpen?(box)
+    }
+
+    private func holdBegan() {
+        markOpened()
+        onHoldBegan?(box)
     }
 
     func dismiss() {
@@ -200,6 +231,8 @@ final class Offer {
         outline = nil
         icon?.orderOut(nil)
         icon = nil
+        iconView = nil
+        opened = false
     }
 }
 
@@ -213,9 +246,14 @@ private final class DashedOutline: NSView {
     }
 }
 
-/// Amber disc with the lasso symbol. Hover for a quarter of a second, or click, to open.
+/// Amber disc with the lasso symbol. Hover a quarter of a second to open the prompt;
+/// press and hold to talk, release to send.
 private final class OfferIcon: NSView {
-    var onActivate: (() -> Void)?
+    var onHover: (() -> Void)?
+    var onPress: (() -> Void)?
+    var onRelease: (() -> Void)?
+    var opened = false { didSet { needsDisplay = true; toolTip = opened ? "Hold to talk, release to send" : toolTip } }
+    var recording = false { didSet { needsDisplay = true } }
     private var hoverTimer: Timer?
     private var hovering = false { didSet { needsDisplay = true } }
 
@@ -223,7 +261,7 @@ private final class OfferIcon: NSView {
         super.init(frame: frame)
         addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
                                        owner: self, userInfo: nil))
-        toolTip = "Ask Llasso about this box"
+        toolTip = "Rest here to ask Llasso, or hold to talk"
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -232,8 +270,9 @@ private final class OfferIcon: NSView {
 
     override func mouseEntered(with event: NSEvent) {
         hovering = true
+        guard !opened else { return }
         hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
-            self?.onActivate?()
+            self?.onHover?()
         }
     }
 
@@ -244,21 +283,33 @@ private final class OfferIcon: NSView {
 
     override func mouseDown(with event: NSEvent) {
         hoverTimer?.invalidate()
-        onActivate?()
+        onPress?()
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        onRelease?()
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        let lit = hovering || opened
         let disc = NSBezierPath(ovalIn: bounds.insetBy(dx: 1, dy: 1))
-        (hovering ? Palette.amber : Palette.ink).setFill()
+        (lit ? Palette.amber : Palette.ink).setFill()
         disc.fill()
-        if !hovering {
+        if !lit {
             Palette.amber.setStroke()
             disc.lineWidth = 1.5
             disc.stroke()
         }
+        if recording {
+            let ring = NSBezierPath(ovalIn: bounds.insetBy(dx: 2.5, dy: 2.5))
+            ring.lineWidth = 2.5
+            Palette.ink.setStroke()
+            ring.stroke()
+        }
+        let symbol = recording ? "mic.fill" : "lasso"
         let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
-            .applying(.init(paletteColors: [hovering ? Palette.ink : Palette.amber]))
-        if let img = NSImage(systemSymbolName: "lasso", accessibilityDescription: nil)?.withSymbolConfiguration(config) {
+            .applying(.init(paletteColors: [lit ? Palette.ink : Palette.amber]))
+        if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(config) {
             let r = CGRect(x: bounds.midX - img.size.width / 2, y: bounds.midY - img.size.height / 2,
                            width: img.size.width, height: img.size.height)
             img.draw(in: r)

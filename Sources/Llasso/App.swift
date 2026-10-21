@@ -64,7 +64,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Any box-shaped drag offers the Llasso icon where it ended.
         let offer = Offer()
-        offer.onAccept = { Controller.shared.begin(box: $0) }
+        offer.onOpen = { Controller.shared.begin(box: $0) }
+        offer.onHoldBegan = { Controller.shared.holdToTalk(box: $0) }
+        offer.onHoldEnded = { Controller.shared.releaseToSend() }
+        Controller.shared.offer = offer
         self.offer = offer
         watcher.onPress = { [weak self] p in self?.offer?.pressed(at: p) }
         watcher.onBox = { box, end in

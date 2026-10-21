@@ -27,6 +27,10 @@ final class Controller {
     private var lastPrompt = ""
     private var spoken = false
     private var pointerHeld = false
+    /// The icon offered after a drag; it stays beside the prompt as the hold-to-talk button.
+    var offer: Offer?
+    private var holding = false
+    private var voiceStarting = false
 
     private var keyMonitor: Any?
     private var clickMonitors: [Any] = []
@@ -77,8 +81,34 @@ final class Controller {
         selectionMade(local, in: w)
     }
 
+    /// Press on the offer icon: open the prompt if it isn't open, and record until release.
+    func holdToTalk(box: CGRect) {
+        if phase == .idle { begin(box: box) }
+        guard phase == .prompting else { return }
+        holding = true
+        pill.typed = false
+        pill.pending = nil
+        offer?.setRecording(true)
+        startVoice()
+    }
+
+    /// Release after holding the icon: send straight away.
+    func releaseToSend() {
+        guard holding else { return }
+        holding = false
+        offer?.setRecording(false)
+        guard phase == .prompting else { return }
+        if pill.text.isEmpty {
+            // Released before any words arrived: wait briefly for the last of them.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.send() }
+        } else {
+            send()
+        }
+    }
+
     func begin() {
-        cancel()
+        let keepOffer = offer?.window != nil && phase == .idle
+        cancel(keepingOffer: keepOffer)
         let front = NSWorkspace.shared.frontmostApplication
         if Sensitive.isSensitive(bundleID: front?.bundleIdentifier) {
             Toast.show("Llasso is off while \(front?.localizedName ?? "this app") is in front.")
@@ -142,7 +172,7 @@ final class Controller {
         if let local = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self] event in
             guard let self else { return event }
             let window = event.window
-            if window === self.pillPanel || window === self.cardPanel { return event }
+            if window === self.pillPanel || window === self.cardPanel || window === self.offer?.window { return event }
             return self.clicked(at: NSEvent.mouseLocation) ? nil : event
         }) { clickMonitors.append(local) }
     }
@@ -153,6 +183,7 @@ final class Controller {
         guard phase == .prompting || phase == .answering else { return false }
         if let p = pillPanel, p.isVisible, p.frame.contains(point) { return false }
         if let c = cardPanel, c.isVisible, c.frame.contains(point) { return false }
+        if let o = offer?.window, o.isVisible, o.frame.contains(point) { return false }
         if phase == .prompting, let box, box.rect.contains(point) { return false }
         cancel()
         return true
@@ -177,8 +208,11 @@ final class Controller {
     }
 
     private func startVoice() {
-        guard !voice.isRunning else { return }
+        // Hover and press can both ask for the mic within a moment; start it once.
+        guard !voice.isRunning, !voiceStarting else { return }
+        voiceStarting = true
         Task {
+            defer { voiceStarting = false }
             if !VoiceInput.microphoneAllowed {
                 guard await VoiceInput.requestMicrophone() else { return }
             }
@@ -238,7 +272,7 @@ final class Controller {
         pauseTimer?.invalidate()
         pauseTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.phase == .prompting, !self.pill.typed, self.voice.isRunning else { return }
+                guard let self, self.phase == .prompting, !self.pill.typed, !self.holding, self.voice.isRunning else { return }
                 let quiet = Date().timeIntervalSince(self.lastSpeechChange)
                 guard !self.pill.text.isEmpty, quiet >= 1.0 else { self.pill.pending = nil; return }
                 let progress = min(1, (quiet - 1.0) / 1.0)
@@ -254,6 +288,8 @@ final class Controller {
         guard phase == .prompting, let box else { return }
         pauseTimer?.invalidate()
         pill.pending = nil
+        holding = false
+        offer?.dismiss()
         let usedVoice = voice.isRunning && !pill.typed
         phase = .answering
         pillPanel?.orderOut(nil)
@@ -360,7 +396,11 @@ final class Controller {
 
     // MARK: End
 
-    func cancel() {
+    func cancel() { cancel(keepingOffer: false) }
+
+    private func cancel(keepingOffer: Bool) {
+        holding = false
+        if !keepingOffer { offer?.dismiss() }
         pauseTimer?.invalidate()
         pauseTimer = nil
         streamTask?.cancel()
