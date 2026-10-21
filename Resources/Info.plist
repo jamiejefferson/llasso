@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Llasso</string>
+    <key>CFBundleDisplayName</key>
+    <string>Llasso</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.eqtr.llasso</string>
+    <key>CFBundleExecutable</key>
+    <string>Llasso</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>26.0</string>
+    <!-- Menu-bar only: no Dock icon. -->
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Llasso listens while you hold a box, so you can talk instead of type. Speech is transcribed on your Mac.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Llasso turns what you say about the box into text, on your Mac.</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Llasso — draw a box on anything and ask.</string>
+</dict>
+</plist>
