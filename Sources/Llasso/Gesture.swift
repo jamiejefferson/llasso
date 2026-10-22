@@ -205,6 +205,15 @@ final class Offer {
 
     func setRecording(_ on: Bool) { iconView?.recording = on }
 
+    /// Centre of the icon on screen, while it shows.
+    var iconCentre: CGPoint? { icon.map { CGPoint(x: $0.frame.midX, y: $0.frame.midY) } }
+
+    /// Move the icon so it sits on the prompt's mic.
+    func moveIcon(to centre: CGPoint) {
+        guard let icon else { return }
+        icon.setFrameOrigin(CGPoint(x: centre.x - icon.frame.width / 2, y: centre.y - icon.frame.height / 2))
+    }
+
     private func markOpened() {
         expiry?.invalidate()
         expiry = nil
@@ -234,16 +243,6 @@ final class Offer {
         icon = nil
         iconView = nil
         opened = false
-    }
-}
-
-private final class DashedOutline: NSView {
-    override func draw(_ dirtyRect: NSRect) {
-        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 2), xRadius: 6, yRadius: 6)
-        path.lineWidth = 1.5
-        path.setLineDash([5, 4], count: 2, phase: 0)
-        Palette.amber.withAlphaComponent(0.85).setStroke()
-        path.stroke()
     }
 }
 

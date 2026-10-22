@@ -47,6 +47,8 @@ final class PillModel: ObservableObject {
     @Published var text = ""
     @Published var listening = false
     var holdingMic = false
+    /// Centre of the mic badge from the pill's top-left corner, measured once laid out.
+    @Published var micOffset = CGPoint(x: 32, y: 50.5)
     @Published var verb: Verb?
     /// 0...1 while the pause-to-send countdown runs, nil otherwise.
     @Published var pending: Double?
@@ -81,6 +83,12 @@ struct PillView: View {
                         .onChanged { _ in if !model.holdingMic { model.holdingMic = true; model.onHold?(true) } }
                         .onEnded { _ in model.holdingMic = false; model.onHold?(false) })
                     .help("Hold to talk; release to send")
+                    .background(GeometryReader { g in
+                        Color.clear.onAppear {
+                            let f = g.frame(in: .global)
+                            model.micOffset = CGPoint(x: f.midX, y: f.midY)
+                        }
+                    })
                 TextField(model.listening ? "Listening… release to send" : "Type, or hold the mic to talk",
                           text: $model.text, axis: .vertical)
                     .textFieldStyle(.plain)

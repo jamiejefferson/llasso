@@ -177,4 +177,14 @@ final class FloatingPanel: NSPanel {
         origin.y = min(max(origin.y, visible.minY + 8), visible.maxY - size.height - 8)
         setFrameOrigin(origin)
     }
+
+    /// Place the panel so the point `offset` (from its top-left) lands on `point`, kept on screen.
+    func place(_ offset: CGPoint, at point: CGPoint, on screen: NSScreen) {
+        let size = frame.size
+        let visible = screen.visibleFrame
+        var origin = CGPoint(x: point.x - offset.x, y: point.y + offset.y - size.height)
+        origin.x = min(max(origin.x, visible.minX + 8), visible.maxX - size.width - 8)
+        origin.y = min(max(origin.y, visible.minY + 8), visible.maxY - size.height - 8)
+        setFrameOrigin(origin)
+    }
 }

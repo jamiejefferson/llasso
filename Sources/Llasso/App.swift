@@ -37,12 +37,15 @@ final class HotKey {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var hotKey: HotKey?
     private let watcher = DragWatcher()
     private var offer: Offer?
     private var gestureRetry: Timer?
+    private var statusTimer: Timer?
+    /// Menu items for the task list carry this tag so they can be rebuilt each time.
+    private static let taskTag = 77
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installEditMenu()
@@ -55,8 +58,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Show history", action: #selector(history), keyEquivalent: "").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Llasso", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.delegate = self
         item.menu = menu
         statusItem = item
+        item.button?.imagePosition = .imageLeading
+        // The menu bar icon shows how many jobs are running or waiting on the user.
+        statusTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshStatus() }
+        }
 
         hotKey = HotKey(keyCode: UInt32(kVK_ANSI_S), modifiers: UInt32(controlKey | optionKey)) {
             DispatchQueue.main.async { Controller.shared.toggle() }
@@ -94,6 +103,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--acttest") {
             Task { @MainActor in await SelfTest.act(); NSApp.terminate(nil) }
         }
+        if CommandLine.arguments.contains("--jobtest") {
+            Task { @MainActor in await SelfTest.jobs(); NSApp.terminate(nil) }
+        }
         if CommandLine.arguments.contains("--namedtest") {
             Task { @MainActor in await SelfTest.named(); NSApp.terminate(nil) }
         }
@@ -129,6 +141,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         main.addItem(editItem)
         NSApp.mainMenu = main
     }
+
+    @MainActor private func refreshStatus() {
+        let jobs = Controller.shared.jobs
+        let running = jobs.filter(\.isRunning).count
+        let waiting = jobs.filter { $0.needsYou && !$0.isRunning }.count
+        let title = running + waiting == 0 ? "" : " \(running + waiting)"
+        if statusItem?.button?.title != title {
+            statusItem?.length = title.isEmpty ? NSStatusItem.squareLength : NSStatusItem.variableLength
+            statusItem?.button?.title = title
+        }
+        statusItem?.button?.contentTintColor = waiting > 0 ? Palette.amber : nil
+    }
+
+    /// Rebuild the task list each time the menu opens: one line per job, newest first.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        MainActor.assumeIsolated {
+            menu.items.filter { $0.tag == Self.taskTag }.forEach(menu.removeItem)
+            let jobs = Controller.shared.jobs
+            guard !jobs.isEmpty else { return }
+            var at = 2   // after "Draw a box" and its separator
+            func add(_ item: NSMenuItem) { item.tag = Self.taskTag; menu.insertItem(item, at: at); at += 1 }
+            let header = NSMenuItem(title: "Tasks", action: nil, keyEquivalent: "")
+            header.isEnabled = false
+            add(header)
+            for job in jobs.reversed() {
+                let mark = job.isRunning ? "◐" : job.needsYou ? "●" : job.card.state == .failed ? "✕" : "✓"
+                let what = job.isRunning ? (job.card.working ?? "Working") : job.needsYou ? "Needs you" : job.card.state == .failed ? "Stopped" : "Done"
+                let mins = Int(Date().timeIntervalSince(job.started) / 60)
+                let item = NSMenuItem(title: "\(mark)  \(String(job.title.prefix(48)))", action: #selector(showJob(_:)), keyEquivalent: "")
+                item.toolTip = "\(what) · \(mins == 0 ? "just now" : "\(mins) min ago")"
+                item.representedObject = job.id
+                item.target = self
+                add(item)
+            }
+            if jobs.contains(where: { !$0.isRunning && !$0.needsYou }) {
+                let clear = NSMenuItem(title: "Clear finished", action: #selector(clearFinished), keyEquivalent: "")
+                clear.target = self
+                add(clear)
+            }
+            add(.separator())
+        }
+    }
+
+    @objc private func showJob(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID else { return }
+        DispatchQueue.main.async { Controller.shared.showJob(id: id) }
+    }
+
+    @objc private func clearFinished() { DispatchQueue.main.async { Controller.shared.clearFinished() } }
 
     @objc private func draw() { DispatchQueue.main.async { Controller.shared.begin() } }
     @objc private func settings() { SettingsWindow.show() }
@@ -527,6 +588,43 @@ enum SelfTest {
         try? fm.createDirectory(at: History.folder, withIntermediateDirectories: true)
         if let data = try? JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: History.folder.appendingPathComponent("codetest.json"))
+        }
+    }
+
+    /// Two jobs at once; a click away from the first while it works; both finish. Also measures
+    /// where the prompt's mic sits. Writes jobtest.json.
+    static func jobs() async {
+        var r: [String: Any] = [:]
+        guard let screen = NSScreen.main else { return }
+        let mic = await Controller.shared.measurePill()
+        r["micOffset"] = "\(mic.x),\(mic.y)"
+        let crop = (try? Capture.png(buttonImage())) ?? Data()
+        let ctx = ScreenContext(appName: "Safari", bundleID: "com.apple.Safari", url: "https://example.com/shop",
+                                elements: ["AXButton 'Buy now'"])
+        let f = screen.visibleFrame
+        let a = Controller.shared.startTestJob(box: (CGRect(x: f.minX + 100, y: f.maxY - 300, width: 300, height: 140), screen),
+                                               context: ctx, prompt: "In one sentence, what is this?", crop: crop)
+        let b = Controller.shared.startTestJob(box: (CGRect(x: f.minX + 700, y: f.maxY - 300, width: 300, height: 140), screen),
+                                               context: ctx, prompt: "Name the colour of the button in one word.", crop: crop)
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        r["a.visibleAtStart"] = a.isVisible
+        r["jobsRunning"] = Controller.shared.jobs.filter(\.isRunning).count
+        // A click on the desktop, away from both cards: the cards hide, the work goes on.
+        let click = CGPoint(x: f.midX, y: f.minY + 40)
+        Controller.shared.hideCardsForTest(at: click)
+        r["a.hiddenAfterClick"] = !a.isVisible
+        r["a.runningAfterClick"] = a.isRunning
+        for _ in 0..<120 where a.isRunning || b.isRunning { try? await Task.sleep(nanoseconds: 500_000_000) }
+        r["a.state"] = "\(a.card.state)"
+        r["a.answer"] = a.card.answer
+        r["b.answer"] = b.card.answer
+        r["a.error"] = a.card.error ?? ""
+        a.show()
+        r["a.visibleAfterShow"] = a.isVisible
+        a.close(); b.close()
+        r["jobsLeft"] = Controller.shared.jobs.count
+        if let data = try? JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: History.folder.appendingPathComponent("jobtest.json"))
         }
     }
 
