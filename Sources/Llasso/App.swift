@@ -85,14 +85,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             else { return }
             offer.show(box: box, near: end)
         }
+        // A test run started from a terminal is charged to the terminal's permissions, not
+        // Llasso's, so it can look ungranted; it must not open Settings or start the drag watcher.
+        let testRun = CommandLine.arguments.contains { $0.hasPrefix("--") && $0.hasSuffix("test") }
         // The tap needs Accessibility; keep trying until it is granted.
-        if !watcher.start() {
+        if !testRun, !watcher.start() {
             gestureRetry = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] t in
                 if self?.watcher.start() == true { t.invalidate() }
             }
         }
 
-        if !Settings.shared.hasKey || !CGPreflightScreenCaptureAccess() {
+        if !testRun, !Settings.shared.hasKey || !CGPreflightScreenCaptureAccess() {
             SettingsWindow.show()
         }
         // Dev hooks: `--draw` starts a box straight away; `--selftest` runs the
