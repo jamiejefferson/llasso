@@ -12,6 +12,9 @@ enum Destination: Hashable {
     case saveFile
     case writeCells(app: String)
     case run
+    case keepCode
+    case undoCode
+    case openCode(name: String)
 
     var label: String {
         switch self {
@@ -23,6 +26,9 @@ enum Destination: Hashable {
         case .saveFile: return "Save to Llasso folder"
         case .writeCells(let app): return "Write to \(app)"
         case .run: return "Run"
+        case .keepCode: return "Keep"
+        case .undoCode: return "Undo"
+        case .openCode(let name): return "Open \(name)"
         }
     }
 }
@@ -65,6 +71,13 @@ enum Actuator {
         case .script:
             return [.run]
         }
+    }
+
+    /// The chips under a code edit that has already been made.
+    static func codeDestinations(changed: [FileChange]) -> [Destination] {
+        var d: [Destination] = [.keepCode, .undoCode]
+        if let first = changed.first { d.append(.openCode(name: (first.path as NSString).lastPathComponent)) }
+        return d
     }
 
     // MARK: Text

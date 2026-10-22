@@ -71,13 +71,15 @@ public enum BuiltinTool: String, CaseIterable, Sendable {
     case editImage = "edit_image"
     case setCells = "set_cells"
     case runScript = "run_applescript"
+    case editCode = "edit_code"
 
     public static func named(_ name: String) -> BuiltinTool? { BuiltinTool(rawValue: name) }
 
     /// The tools on offer for this box. Every one leaves the change to the user's tap.
-    public static func available(for kind: ContentKind) -> [BuiltinTool] {
+    public static func available(for kind: ContentKind, hasSource: Bool = false) -> [BuiltinTool] {
         var tools: [BuiltinTool] = [.askUser, .pointAt, .proposeText, .editImage, .runScript]
         if kind == .spreadsheet { tools.append(.setCells) }
+        if hasSource { tools.append(.editCode) }
         return tools
     }
 
@@ -112,6 +114,9 @@ public enum BuiltinTool: String, CaseIterable, Sendable {
                        "rows": ["type": "array", "items": ["type": "array", "items": ["type": "string"]]],
                        "summary": summary],
                       ["rows", "summary"])
+        case .editCode:
+            return fn("Change the source code behind the box. A coding agent edits the project's files; the user sees the diff and can undo it. Say exactly what should look or behave differently, naming the visible text, element and values.",
+                      ["instruction": ["type": "string"], "summary": summary], ["instruction", "summary"])
         case .runScript:
             return fn("Run an AppleScript that acts in a scriptable Mac app (Finder, Mail, Notes, Keynote, Music and others). The user reads the summary and confirms first. Use only when no other tool fits.",
                       ["script": ["type": "string"], "summary": summary], ["script", "summary"])
@@ -135,7 +140,7 @@ public enum BuiltinTool: String, CaseIterable, Sendable {
         case .runScript:
             guard let s = a["script"] as? String else { return nil }
             return .script(source: s, summary: summary)
-        case .askUser, .pointAt:
+        case .askUser, .pointAt, .editCode:
             return nil
         }
     }

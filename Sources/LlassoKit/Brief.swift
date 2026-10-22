@@ -33,6 +33,8 @@ public struct ScreenContext: Sendable, Equatable {
     public var integration: String?
     /// Set when the app has a known MCP server that is not set up yet.
     public var integrationHint: String?
+    /// The project folder behind the box, when the resolver found one.
+    public var source: SourceTarget?
 
     public init(appName: String? = nil, bundleID: String? = nil, windowTitle: String? = nil,
                 documentPath: String? = nil, url: String? = nil, selectedText: String? = nil,
@@ -59,6 +61,7 @@ public struct ScreenContext: Sendable, Equatable {
         } else if let windowTitle, !windowTitle.isEmpty, windowTitle != appName {
             bits.append(windowTitle)
         }
+        if let source, source.file == nil || documentPath == nil { bits.append("code: " + source.name) }
         if let integration { bits.append(integration + " connected") }
         return bits.isEmpty ? "Screen" : bits.joined(separator: " · ")
     }
@@ -96,6 +99,10 @@ public enum Brief {
     - Help with an app: answer in plain steps, and call point_at to ring the control to use next.
     - When an app's own tools are listed (named server__tool), prefer them for changes in \
     that app: read first, then change. Changes through them wait for the user's approval.
+    - Code: when the context names the code behind the box and the user wants the page or \
+    app itself changed (layout, styles, copy, behaviour), call edit_code with a precise \
+    instruction. A coding agent makes the change in the project and the user can undo it. \
+    Prefer it to propose_text for anything that lives in the source.
     - If the request could mean two different actions, call ask_user with the options \
     instead of guessing. Ask at most once per request.
     - After a tool runs you receive its result. Finish with one short sentence saying what changed.
@@ -140,6 +147,9 @@ public enum Brief {
         if let sheet = context.sheet {
             lines.append("- Spreadsheet selection (\(sheet.app.rawValue)) \(sheet.address):")
             for row in sheet.values.prefix(60) { lines.append("  | " + row.joined(separator: " | ")) }
+        }
+        if let v = context.source {
+            lines.append("- Code behind the box: \(v.root) (\(v.how))" + (v.file.map { ", file \($0)" } ?? ""))
         }
         if let v = context.integration { lines.append("- \(v)'s own tools are connected and listed.") }
         if !context.elements.isEmpty {

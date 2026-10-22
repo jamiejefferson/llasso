@@ -197,6 +197,9 @@ struct ProposalCard {
     var image: Data?
     var rows: [[String]]?
     var script: String?
+    /// A code edit already made: the files it touched and the unified diff.
+    var files: [FileChange]?
+    var diff: String?
     var destinations: [Destination]
     /// Set once a destination has been used: what happened.
     var done: String?
@@ -353,6 +356,29 @@ struct CardView: View {
                 }
                 .frame(maxHeight: 140).fixedSize(horizontal: false, vertical: true)
             }
+            if let files = p.files {
+                ForEach(Array(files.prefix(8).enumerated()), id: \.offset) { _, f in
+                    HStack(spacing: 8) {
+                        Text(f.path).font(.system(size: 12, design: .monospaced)).foregroundColor(.llPaper).lineLimit(1)
+                        Spacer(minLength: 4)
+                        Text("+\(f.added)").font(.system(size: 12, design: .monospaced)).foregroundColor(.llOK)
+                        Text("−\(f.removed)").font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(Color(red: 0.89, green: 0.40, blue: 0.36))
+                    }
+                }
+            }
+            if let diff = p.diff, !diff.isEmpty {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(diff.split(separator: "\n", omittingEmptySubsequences: false).prefix(400).enumerated()), id: \.offset) { _, line in
+                            Text(String(line)).font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(diffColour(line)).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .textSelection(.enabled)
+                }
+                .frame(maxHeight: 200).fixedSize(horizontal: false, vertical: true)
+            }
             if let done = p.done {
                 Text("✓ " + done).font(.system(size: 13)).foregroundColor(.llOK)
             }
@@ -362,6 +388,14 @@ struct CardView: View {
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.llWell))
+    }
+
+    private func diffColour(_ line: Substring) -> Color {
+        if line.hasPrefix("+++") || line.hasPrefix("---") || line.hasPrefix("diff ") || line.hasPrefix("index ") { return .llMuted }
+        if line.hasPrefix("+") { return .llOK }
+        if line.hasPrefix("-") { return Color(red: 0.89, green: 0.40, blue: 0.36) }
+        if line.hasPrefix("@@") { return .llAmber }
+        return Color(white: 0.73)
     }
 
     private var rendered: AttributedString {

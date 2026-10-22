@@ -94,6 +94,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--acttest") {
             Task { @MainActor in await SelfTest.act(); NSApp.terminate(nil) }
         }
+        if CommandLine.arguments.contains("--codetest") {
+            Task { @MainActor in await SelfTest.code(); NSApp.terminate(nil) }
+        }
         if CommandLine.arguments.contains("--mcptest") {
             Task { @MainActor in await SelfTest.mcp(); NSApp.terminate(nil) }
         }
@@ -204,6 +207,17 @@ struct SettingsView: View {
                                 Text(i.setup).font(.caption).foregroundStyle(.secondary)
                             }
                         }
+                    }
+                }
+                HStack(alignment: .top) {
+                    Image(systemName: ClaudeCode.path != nil ? "checkmark.circle.fill" : "circle.dashed")
+                        .foregroundStyle(ClaudeCode.path != nil ? Color.green : Color.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Claude Code")
+                        Text(ClaudeCode.path != nil
+                             ? "Ready. Box a local web page or an open file and ask for a change: it edits the project's code, and the card offers Undo."
+                             : "Not installed. Install it from claude.com/claude-code to let Llasso edit the code behind local web pages.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 HStack {
@@ -398,6 +412,131 @@ enum SelfTest {
         if let data = try? JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: History.folder.appendingPathComponent("acttest.json"))
         }
+    }
+
+    /// Route A end to end on a scratch project: a page served from a repo, the resolver,
+    /// the model choosing edit_code, Claude Code editing, the diff, and Undo. Writes codetest.json.
+    static func code() async {
+        var r: [String: Any] = [:]
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("llasso-codetest-\(Int(Date().timeIntervalSince1970))")
+        let page = "<!doctype html>\n<html><body>\n  <h1>Shop</h1>\n  <button class=\"buy\" style=\"padding:4px;font-size:12px\">Buy now</button>\n</body></html>\n"
+        var server: Process?
+        do {
+            try fm.createDirectory(at: root, withIntermediateDirectories: true)
+            try Data(page.utf8).write(to: root.appendingPathComponent("index.html"))
+            try Data("notes\n".utf8).write(to: root.appendingPathComponent("notes.txt"))
+            for args in [["init", "-q"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"]] {
+                _ = try Proc.run(Checkpoint.git, ["-C", root.path] + args)
+            }
+            // The user's own work in progress: one staged change Llasso must leave alone.
+            try Data("notes\nstaged by the user\n".utf8).write(to: root.appendingPathComponent("notes.txt"))
+            _ = try Proc.run(Checkpoint.git, ["-C", root.path, "add", "notes.txt"])
+            let statusBefore = try Proc.run(Checkpoint.git, ["-C", root.path, "status", "--porcelain"]).out
+
+            let port = 48_000 + Int.random(in: 0..<900)
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+            p.arguments = ["-m", "http.server", String(port), "--bind", "127.0.0.1"]
+            p.currentDirectoryURL = root
+            p.standardOutput = FileHandle.nullDevice
+            p.standardError = FileHandle.nullDevice
+            try p.run()
+            server = p
+            try await Task.sleep(nanoseconds: 1_500_000_000)
+
+            var ctx = ScreenContext(appName: "Safari", bundleID: "com.apple.Safari", windowTitle: "Shop",
+                                    url: "http://127.0.0.1:\(port)/index.html",
+                                    elements: ["AXHeading 'Shop'", "AXButton 'Buy now'"])
+            ctx.roles = ["AXButton", "AXStaticText"]
+            ctx.source = Resolver.source(for: ctx)
+            r["resolve.root"] = ctx.source?.root ?? "nil"
+            r["resolve.how"] = ctx.source?.how ?? ""
+            r["resolve.ok"] = ctx.source.map { URL(fileURLWithPath: $0.root).resolvingSymlinksInPath().path == root.resolvingSymlinksInPath().path } ?? false
+            r["tag"] = ctx.tag
+            guard let target = ctx.source else { throw ActionError.failed("resolver found nothing") }
+
+            let crop = try Capture.png(Self.buttonImage())
+            var calls: [ToolCall] = []
+            for try await chunk in Settings.shared.client.streamTurn(
+                model: Settings.shared.model,
+                messages: Brief.firstMessages(prompt: "make this button much bigger", verb: nil, context: ctx,
+                                              crop: crop, screen: nil, spoken: false),
+                tools: BuiltinTool.available(for: ctx.kind, hasSource: true).map(\.schema)) {
+                if case .tools(let c) = chunk { calls = c }
+            }
+            r["model.tool"] = calls.first?.name ?? "none"
+            let instruction = calls.first?.args["instruction"] as? String ?? "Make the Buy now button much bigger."
+            r["model.instruction"] = instruction
+
+            let dir = fm.temporaryDirectory.appendingPathComponent("llasso-codetest-crop")
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            try crop.write(to: dir.appendingPathComponent("box.png"))
+            let checkpoint = Checkpoint(target: target)
+            let before = try checkpoint.snapshot()
+            let start = Date()
+            var steps: [String] = []
+            let (said, isError) = try await ClaudeCode.edit(
+                prompt: CodeBrief.prompt(instruction: instruction, request: "make this button much bigger", context: ctx,
+                                         target: target, cropPath: dir.appendingPathComponent("box.png").path),
+                in: target.root, extraDirs: [dir.path]) { e in if case .step(let s) = e { DispatchQueue.main.async { steps.append(s) } } }
+            r["claude.seconds"] = Int(Date().timeIntervalSince(start))
+            r["claude.said"] = said
+            r["claude.isError"] = isError
+            try await Task.sleep(nanoseconds: 200_000_000)
+            r["claude.steps"] = steps
+            let after = try checkpoint.snapshot()
+            r["changes"] = try checkpoint.changes(from: before, to: after).map { "\($0.path) +\($0.added) -\($0.removed)" }
+            r["diff"] = try checkpoint.diff(from: before, to: after)
+            r["served.after"] = (try? String(contentsOf: URL(string: "http://127.0.0.1:\(port)/index.html")!, encoding: .utf8)) ?? ""
+
+            try checkpoint.undo(before: before, after: after)
+            r["undo.restored"] = (try? String(contentsOf: root.appendingPathComponent("index.html"), encoding: .utf8)) == page
+            r["undo.userStagedKept"] = try Proc.run(Checkpoint.git, ["-C", root.path, "status", "--porcelain"]).out == statusBefore
+
+            // A file outside any repo: Llasso's own store holds the checkpoint.
+            let loose = fm.temporaryDirectory.appendingPathComponent("llasso-loose-\(Int(Date().timeIntervalSince1970))")
+            try fm.createDirectory(at: loose, withIntermediateDirectories: true)
+            let file = loose.appendingPathComponent("page.html")
+            try Data(page.utf8).write(to: file)
+            var looseCtx = ScreenContext(appName: "TextEdit", documentPath: file.path)
+            looseCtx.source = Resolver.source(for: looseCtx)
+            r["loose.isRepo"] = looseCtx.source?.isRepo ?? true
+            if let t = looseCtx.source {
+                let cp = Checkpoint(target: t)
+                let b = try cp.snapshot()
+                try Data(page.replacingOccurrences(of: "4px", with: "20px").utf8).write(to: file)
+                try Data("new\n".utf8).write(to: loose.appendingPathComponent("added.css"))
+                let a = try cp.snapshot()
+                r["loose.changes"] = try cp.changes(from: b, to: a).map(\.path)
+                try cp.undo(before: b, after: a)
+                r["loose.restored"] = (try? String(contentsOf: file, encoding: .utf8)) == page
+                    && !fm.fileExists(atPath: loose.appendingPathComponent("added.css").path)
+                r["loose.untouched"] = !fm.fileExists(atPath: loose.appendingPathComponent(".git").path)
+            }
+            try? fm.removeItem(at: loose)
+        } catch { r["error"] = error.localizedDescription }
+        server?.terminate()
+        try? fm.removeItem(at: root)
+        try? fm.createDirectory(at: History.folder, withIntermediateDirectories: true)
+        if let data = try? JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: History.folder.appendingPathComponent("codetest.json"))
+        }
+    }
+
+    /// A small picture of a button labelled "Buy now", standing in for a boxed page.
+    static func buttonImage() -> CGImage {
+        let size = CGSize(width: 360, height: 160)
+        let ctx = CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.setFillColor(CGColor(gray: 1, alpha: 1)); ctx.fill(CGRect(origin: .zero, size: size))
+        ctx.setFillColor(CGColor(gray: 0.9, alpha: 1)); ctx.fill(CGRect(x: 20, y: 60, width: 80, height: 22))
+        let g = NSGraphicsContext(cgContext: ctx, flipped: false)
+        NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = g
+        NSAttributedString(string: "Shop", attributes: [.font: NSFont.boldSystemFont(ofSize: 28)]).draw(at: CGPoint(x: 20, y: 105))
+        NSAttributedString(string: "Buy now", attributes: [.font: NSFont.systemFont(ofSize: 12)]).draw(at: CGPoint(x: 26, y: 64))
+        NSGraphicsContext.restoreGraphicsState()
+        return ctx.makeImage()!
     }
 
     /// Connect to every integration that has a server, list its tools and call one

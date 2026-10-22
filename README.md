@@ -6,6 +6,8 @@ P0 build: menu-bar app, ⌃⌥S overlay, region capture, on-device voice input, 
 
 Actions: Llasso guesses what the box holds (editable text, web page, image, spreadsheet, design canvas, app interface) and the model acts through tools. Every change waits for a tap on the card: put text back in place, paste, copy, open a new document, save, write spreadsheet cells, run an AppleScript. Apps with their own MCP server (Paper, Hatch, Figma's desktop server, and any local server in Claude Code's config) connect automatically; their read-only tools run straight away and their changes wait for approval.
 
+Code edits: when the box shows a page served from this Mac (a Hatch project, or any dev server on localhost) or a file open in an editor, Llasso finds the project folder and the model can hand the change to Claude Code, run headless in that folder with file tools only. The card shows the files and the diff with Keep and Undo. Undo restores the snapshot Llasso took just before the edit; in a git repo it uses a private index, so the user's staged work, branches and commits are left alone.
+
 ## Build and run
 
     ./build.sh            # builds ~/Applications/Llasso.app
@@ -22,3 +24,5 @@ First run: paste an OpenRouter key in Settings, then allow Screen Recording, Mic
     open ~/Applications/Llasso.app --args --mcptest        # connects each app's MCP server; writes mcptest.json
     open ~/Applications/Llasso.app --args --acttest        # TextEdit fix-in-place and an Excel formula, closed unsaved;
                                                            # writes acttest.json
+    open ~/Applications/Llasso.app --args --codetest       # a scratch repo served on localhost: resolve, edit_code,
+                                                           # Claude Code edit, diff, Undo; writes codetest.json

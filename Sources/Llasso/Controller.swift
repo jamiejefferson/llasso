@@ -48,6 +48,8 @@ final class Controller {
     private var proposal: Proposal?
     private var editedImage: Data?
     private var actions: [String] = []
+    /// The code edit on the card, kept so Undo can put the files back.
+    private var codeEdit: (checkpoint: Checkpoint, before: String, after: String, files: [FileChange])?
 
     private init() {
         pill.onSend = { [weak self] in self?.send() }
@@ -258,7 +260,9 @@ final class Controller {
         let app = frontApp
         // Read accessibility context off the main thread; slow apps can take a moment.
         Task.detached { [weak self] in
-            let ctx = ContextReader.read(app: app, selection: global)
+            var found = ContextReader.read(app: app, selection: global)
+            found.source = Resolver.source(for: found)
+            let ctx = found
             await MainActor.run {
                 guard let self, self.phase == .prompting || self.phase == .answering else { return }
                 var ctx = ctx
@@ -266,7 +270,7 @@ final class Controller {
                 ctx.integrationHint = self.context.integrationHint
                 self.context = ctx
                 self.pill.tag = ctx.tag + "  ·  " + ctx.kind.rawValue
-                self.pill.tagKnown = ctx.documentPath != nil || ctx.url != nil || ctx.integration != nil
+                self.pill.tagKnown = ctx.documentPath != nil || ctx.url != nil || ctx.integration != nil || ctx.source != nil
             }
         }
         connectIntegration(for: app)
@@ -397,7 +401,7 @@ final class Controller {
         let client = settings.client
         let model = settings.model
         let speak = spoken && settings.voiceOut != .off
-        var tools = BuiltinTool.available(for: context.kind).map(\.schema)
+        var tools = BuiltinTool.available(for: context.kind, hasSource: context.source != nil).map(\.schema)
         if let mcp, let integration { tools += Integrations.shared.toolSchemas(mcp, blocked: integration.blocked) }
         var shown = ""
         do {
@@ -474,6 +478,9 @@ final class Controller {
             case .pointAt:
                 point(x: args["x"] as? Double ?? 0.5, y: args["y"] as? Double ?? 0.5, label: args["label"] as? String ?? "Here")
                 return Outcome(text: "Ringed the point on screen.")
+            case .editCode:
+                return await editCode(instruction: args["instruction"] as? String ?? lastPrompt,
+                                      summary: args["summary"] as? String ?? "")
             case .proposeText, .editImage, .setCells, .runScript:
                 guard let p = builtin.proposal(args) else { return Outcome(text: "The arguments were incomplete.") }
                 return await propose(p)
@@ -540,8 +547,100 @@ final class Controller {
         return Outcome(text: "Shown to the user, who will choose where it goes. Do not repeat it.", endsTurn: true)
     }
 
+    /// Route A: Claude Code edits the project behind the box, between two snapshots.
+    private func editCode(instruction: String, summary: String) async -> Outcome {
+        guard let target = context.source else { return Outcome(text: "No project folder was found for this box.") }
+        guard let crop = capture?.crop else { return Outcome(text: "There is no capture to show the coding agent.") }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("llasso-\(UUID().uuidString.prefix(8))")
+        let cropURL = dir.appendingPathComponent("box.png")
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try crop.write(to: cropURL)
+        } catch { return Outcome(text: "Llasso couldn't save the capture: \(error.localizedDescription)") }
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let checkpoint = Checkpoint(target: target)
+        card.state = .thinking
+        card.working = "Checkpointing \(target.name)…"
+        let prompt = CodeBrief.prompt(instruction: instruction, request: lastPrompt, context: context,
+                                      target: target, cropPath: cropURL.path)
+        do {
+            let before = try await Task.detached { try checkpoint.snapshot() }.value
+            card.working = "Claude Code is reading \(target.name)…"
+            let (said, isError) = try await ClaudeCode.edit(prompt: prompt, in: target.root, extraDirs: [dir.path]) { event in
+                Task { @MainActor [weak self] in
+                    guard let self, case .step(let step) = event else { return }
+                    self.card.working = "Claude Code: \(step)…"
+                    if step.hasPrefix("Editing") || step.hasPrefix("Writing") { self.card.log.append("✎ " + step) }
+                }
+            }
+            if Task.isCancelled { return Outcome(text: "Stopped.", endsTurn: true) }
+            card.working = "Reading the changes…"
+            let (after, files, diff) = try await Task.detached { () throws -> (String, [FileChange], String) in
+                let after = try checkpoint.snapshot()
+                return (after, try checkpoint.changes(from: before, to: after), try checkpoint.diff(from: before, to: after))
+            }.value
+            card.working = nil
+            guard !files.isEmpty else {
+                return Outcome(text: (isError ? "Claude Code failed: " : "Claude Code changed no files. It said: ") + said)
+            }
+            codeEdit = (checkpoint, before, after, files)
+            actions.append("edit_code \(target.name): \(files.map(\.path).joined(separator: ", "))")
+            var p = ProposalCard(summary: summary.ifEmpty("Changed \(files.count) file\(files.count == 1 ? "" : "s") in \(target.name)"),
+                                 destinations: Actuator.codeDestinations(changed: files))
+            p.text = said
+            p.files = files
+            p.diff = String(diff.prefix(30_000))
+            card.proposal = p
+            return Outcome(text: "Edited \(files.map(\.path).joined(separator: ", ")) in \(target.root). Claude Code said: \(said)\nThe user sees the diff with Keep and Undo. Do not repeat it.",
+                           endsTurn: true)
+        } catch {
+            card.working = nil
+            card.error = error.localizedDescription
+            return Outcome(text: "The code edit failed: \(error.localizedDescription)", endsTurn: true)
+        }
+    }
+
+    /// Keep, Undo or open a code edit that has already been made.
+    private func deliverCode(_ d: Destination) {
+        guard let edit = codeEdit else { return }
+        switch d {
+        case .keepCode:
+            card.proposal?.done = "Kept."
+            card.proposal?.destinations = []
+            actions.append("kept")
+        case .undoCode:
+            card.working = "Undoing…"
+            Task {
+                do {
+                    try await Task.detached { try edit.checkpoint.undo(before: edit.before, after: edit.after) }.value
+                    card.working = nil
+                    card.proposal?.done = "Undone. The files are as they were."
+                    card.proposal?.destinations = []
+                    actions.append("undone")
+                    codeEdit = nil
+                    messages.append(.user("(Llasso note, not from the user) The user undid the code edit."))
+                } catch {
+                    card.working = nil
+                    card.error = error.localizedDescription
+                }
+            }
+        case .openCode:
+            if let first = edit.files.first {
+                NSWorkspace.shared.open(URL(fileURLWithPath: edit.checkpoint.target.root).appendingPathComponent(first.path))
+            }
+        default: break
+        }
+        History.append(prompt: lastPrompt, verb: pill.verb, context: context, answer: card.answer,
+                       model: Settings.shared.model, actions: actions)
+    }
+
     /// The user tapped a destination on the proposal.
     private func deliver(to d: Destination) {
+        switch d {
+        case .keepCode, .undoCode, .openCode: deliverCode(d); return
+        default: break
+        }
         guard let p = proposal else { return }
         let ctx = context
         let app = frontApp
@@ -677,6 +776,7 @@ final class Controller {
         proposal = nil
         editedImage = nil
         actions = []
+        codeEdit = nil
     }
 }
 
