@@ -54,6 +54,10 @@ final class Controller {
     private init() {
         pill.onSend = { [weak self] in self?.send() }
         pill.onCancel = { [weak self] in self?.cancel() }
+        pill.onHold = { [weak self] down in
+            guard let self else { return }
+            if down { self.holdToTalk() } else { self.releaseToSend() }
+        }
         card.onStop = { [weak self] in self?.stopAnswer() }
         card.onClose = { [weak self] in self?.cancel() }
         card.onCopy = { [weak self] in
@@ -96,13 +100,17 @@ final class Controller {
         else { return }
         let local = box.intersection(w.frame).offsetBy(dx: -w.frame.minX, dy: -w.frame.minY)
         w.selectionView.show(selection: local)
-        startVoice()
         selectionMade(local, in: w)
     }
 
     /// Press on the offer icon: open the prompt if it isn't open, and record until release.
+    /// This press, or one on the pill's mic, is the only thing that turns the microphone on.
     func holdToTalk(box: CGRect) {
         if phase == .idle { begin(box: box) }
+        holdToTalk()
+    }
+
+    func holdToTalk() {
         guard phase == .prompting else { return }
         holding = true
         pill.typed = false
@@ -223,11 +231,10 @@ final class Controller {
         pointerHeld = true
         for o in overlays where o.selectionView.mode == .selecting { o.selectionView.clear() }
         pillPanel?.orderOut(nil)
-        startVoice()
     }
 
     private func startVoice() {
-        // Hover and press can both ask for the mic within a moment; start it once.
+        // Two presses can ask for the mic within a moment; start it once.
         guard !voice.isRunning, !voiceStarting else { return }
         voiceStarting = true
         Task {
@@ -237,6 +244,8 @@ final class Controller {
             }
             do {
                 try await voice.start()
+                // Released and sent, or cancelled, before the mic came up: let it go at once.
+                guard phase == .prompting else { voice.abandon(); pill.listening = false; return }
                 pill.listening = voice.isRunning
                 lastSpeechChange = Date()
             } catch {
@@ -667,6 +676,8 @@ final class Controller {
                                model: Settings.shared.model, actions: actions)
                 // Leaving the boxed app's change in view: drop the outline once text went back in place.
                 if case .replaceInPlace = d { overlays.forEach { $0.orderOut(nil) } }
+            } catch ActionError.cancelled {
+                card.working = nil
             } catch {
                 card.working = nil
                 card.error = error.localizedDescription

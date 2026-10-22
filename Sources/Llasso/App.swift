@@ -94,6 +94,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--acttest") {
             Task { @MainActor in await SelfTest.act(); NSApp.terminate(nil) }
         }
+        if CommandLine.arguments.contains("--savetest") {
+            Task { @MainActor in SelfTest.save(); NSApp.terminate(nil) }
+        }
         if CommandLine.arguments.contains("--codetest") {
             Task { @MainActor in await SelfTest.code(); NSApp.terminate(nil) }
         }
@@ -521,6 +524,38 @@ enum SelfTest {
         try? fm.createDirectory(at: History.folder, withIntermediateDirectories: true)
         if let data = try? JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: History.folder.appendingPathComponent("codetest.json"))
+        }
+    }
+
+    /// Open the Save to… panel over a Llasso overlay, check it sits above the overlay and
+    /// starts in the project, then close it. Writes savetest.json.
+    static func save() {
+        guard let screen = NSScreen.main else { return }
+        let overlay = OverlayWindow(screen: screen)
+        overlay.orderFrontRegardless()
+        var ctx = ScreenContext(appName: "Hatch")
+        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/_AppDev/Powell").path
+        ctx.source = SourceTarget(root: root, isRepo: true, how: "test")
+        var r: [String: Any] = ["startFolder": Actuator.startFolder(context: ctx, ext: "png").path]
+        let timer = Timer(timeInterval: 1.5, repeats: false) { _ in
+            MainActor.assumeIsolated {
+                let panel = NSApp.windows.compactMap { $0 as? NSSavePanel }.first
+                r["panelVisible"] = panel?.isVisible ?? false
+                r["panelAboveOverlay"] = (panel?.level.rawValue ?? 0) > overlay.level.rawValue
+                r["levels"] = "panel \(panel?.level.rawValue ?? -1), overlay \(overlay.level.rawValue)"
+                r["panelFolder"] = panel?.directoryURL?.path ?? ""
+                r["onScreenOrder"] = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? [])
+                    .filter { ($0[kCGWindowOwnerPID as String] as? Int32) == getpid() }
+                    .map { "\($0[kCGWindowLayer as String] ?? "") \($0[kCGWindowName as String] ?? "")" }
+                panel?.cancel(nil)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        do { _ = try Actuator.saveAs(Data("x".utf8), ext: "png", context: ctx) } catch { r["result"] = "\(error)" }
+        r["overlayRestored"] = overlay.level == .screenSaver
+        overlay.orderOut(nil)
+        if let data = try? JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: History.folder.appendingPathComponent("savetest.json"))
         }
     }
 

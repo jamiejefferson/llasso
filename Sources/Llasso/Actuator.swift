@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import LlassoKit
+import UniformTypeIdentifiers
 
 /// Where a proposal can go. Llasso offers only the ones that work for the box.
 enum Destination: Hashable {
@@ -9,7 +10,7 @@ enum Destination: Hashable {
     case replaceFile(name: String)
     case copy
     case newDocument
-    case saveFile
+    case saveAs
     case writeCells(app: String)
     case run
     case keepCode
@@ -23,7 +24,7 @@ enum Destination: Hashable {
         case .replaceFile(let name): return "Save beside \(name)"
         case .copy: return "Copy"
         case .newDocument: return "New document"
-        case .saveFile: return "Save to Llasso folder"
+        case .saveAs: return "Save to…"
         case .writeCells(let app): return "Write to \(app)"
         case .run: return "Run"
         case .keepCode: return "Keep"
@@ -35,6 +36,8 @@ enum Destination: Hashable {
 
 enum ActionError: Error, LocalizedError {
     case failed(String)
+    /// The user closed a panel; nothing happened and nothing needs saying.
+    case cancelled
     var errorDescription: String? { if case .failed(let m) = self { return m }; return nil }
 }
 
@@ -52,7 +55,7 @@ enum Actuator {
         case .text:
             var d: [Destination] = []
             if c.canReplaceText || c.canSetField { d.append(.replaceInPlace(app: app)) }
-            d += [.copy, .newDocument, .saveFile]
+            d += [.copy, .newDocument, .saveAs]
             return d
         case .image:
             var d: [Destination] = []
@@ -60,7 +63,7 @@ enum Actuator {
                 d.append(.replaceFile(name: (path as NSString).lastPathComponent))
             }
             if c.kind != .webPage && c.kind != .readOnlyText { d.append(.pasteInto(app: app)) }
-            d += [.copy, .saveFile]
+            d += [.copy, .saveAs]
             return d
         case .cells:
             var d: [Destination] = []
@@ -96,9 +99,9 @@ enum Actuator {
         case .newDocument:
             try newDocument(text)
             return "Opened a new TextEdit document with the text."
-        case .saveFile:
-            let url = try save(Data(text.utf8), ext: "txt")
-            return "Saved \(url.lastPathComponent) in Documents/Llasso."
+        case .saveAs:
+            let url = try saveAs(Data(text.utf8), ext: "txt", context: c)
+            return "Saved \(url.lastPathComponent) in \(url.deletingLastPathComponent().lastPathComponent)."
         default:
             throw ActionError.failed("That destination doesn't take text.")
         }
@@ -159,10 +162,10 @@ enum Actuator {
         case .copy:
             copy(.png(png))
             return "Copied the image to the clipboard."
-        case .saveFile:
-            let url = try save(png, ext: "png")
+        case .saveAs:
+            let url = try saveAs(png, ext: "png", context: c)
             NSWorkspace.shared.activateFileViewerSelecting([url])
-            return "Saved \(url.lastPathComponent) in Documents/Llasso."
+            return "Saved \(url.lastPathComponent) in \(url.deletingLastPathComponent().lastPathComponent)."
         default:
             throw ActionError.failed("That destination doesn't take an image.")
         }
@@ -279,6 +282,47 @@ enum Actuator {
             NSWorkspace.shared.open(url); return
         }
         NSWorkspace.shared.open([url], withApplicationAt: textEdit, configuration: config)
+    }
+
+    /// Ask where to save, starting in the project behind the box when there is one,
+    /// otherwise where the user last saved. Throws `.cancelled` if they close the panel.
+    static func saveAs(_ data: Data, ext: String, context c: ScreenContext) throws -> URL {
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.allowedContentTypes = [ext == "png" ? .png : .plainText]
+        panel.nameFieldStringValue = "Llasso \(stamp()).\(ext)"
+        panel.directoryURL = startFolder(context: c, ext: ext)
+        panel.message = c.source.map { "Saving into \($0.name)" } ?? ""
+        // runModal puts the panel at the modal level, under Llasso's overlay and card;
+        // drop those below it while the panel is open.
+        let raised = NSApp.windows.filter { $0 !== panel && $0.isVisible && $0.level.rawValue > NSWindow.Level.modalPanel.rawValue }
+        let levels = raised.map(\.level)
+        raised.forEach { $0.level = .floating }
+        defer { zip(raised, levels).forEach { $0.level = $1 } }
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { throw ActionError.cancelled }
+        try data.write(to: url)
+        UserDefaults.standard.set(url.deletingLastPathComponent().path, forKey: lastFolderKey)
+        return url
+    }
+
+    static let lastFolderKey = "lastSaveFolder"
+
+    /// The folder the save panel opens in. Inside a project: the last folder used there,
+    /// else its usual image folder for images, else its root.
+    static func startFolder(context c: ScreenContext, ext: String) -> URL {
+        let fm = FileManager.default
+        let last = UserDefaults.standard.string(forKey: lastFolderKey).flatMap { fm.fileExists(atPath: $0) ? $0 : nil }
+        if let root = c.source?.root {
+            if let last, last.hasPrefix(root) { return URL(fileURLWithPath: last) }
+            let candidates = ext == "png" ? ["public/images", "src/assets/images", "assets/images", "images", "src/assets", "assets", "public"] : []
+            for sub in candidates where fm.fileExists(atPath: root + "/" + sub) { return URL(fileURLWithPath: root + "/" + sub) }
+            return URL(fileURLWithPath: root)
+        }
+        if let last { return URL(fileURLWithPath: last) }
+        try? fm.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+        return outputFolder
     }
 
     static func save(_ data: Data, ext: String) throws -> URL {

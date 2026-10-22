@@ -46,6 +46,7 @@ final class PillModel: ObservableObject {
     @Published var tagKnown = false
     @Published var text = ""
     @Published var listening = false
+    var holdingMic = false
     @Published var verb: Verb?
     /// 0...1 while the pause-to-send countdown runs, nil otherwise.
     @Published var pending: Double?
@@ -53,6 +54,8 @@ final class PillModel: ObservableObject {
     @Published var notice: String?
 
     var onSend: (() -> Void)?
+    /// The mic badge pressed (true) or released (false).
+    var onHold: ((Bool) -> Void)?
     var onCancel: (() -> Void)?
 }
 
@@ -73,7 +76,12 @@ struct PillView: View {
             }
             HStack(alignment: .top, spacing: 12) {
                 MicBadge(listening: model.listening)
-                TextField(model.listening ? "Listening… or type" : "Ask about the box",
+                    .contentShape(Circle())
+                    .gesture(DragGesture(minimumDistance: 0)
+                        .onChanged { _ in if !model.holdingMic { model.holdingMic = true; model.onHold?(true) } }
+                        .onEnded { _ in model.holdingMic = false; model.onHold?(false) })
+                    .help("Hold to talk; release to send")
+                TextField(model.listening ? "Listening… release to send" : "Type, or hold the mic to talk",
                           text: $model.text, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 18))
@@ -338,8 +346,14 @@ struct CardView: View {
             }
             if let data = p.image, let image = NSImage(data: data) {
                 Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: .infinity, maxHeight: 280)
+                    .frame(maxWidth: .infinity, maxHeight: 360)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .onTapGesture { Self.openFullSize(data) }
+                    .help("Click to open full size")
+                if p.done == nil {
+                    Text("Not saved yet. Click the image to see it full size.")
+                        .font(.system(size: 11)).foregroundColor(.llMuted)
+                }
             }
             if let rows = p.rows {
                 VStack(alignment: .leading, spacing: 2) {
@@ -388,6 +402,13 @@ struct CardView: View {
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.llWell))
+    }
+
+    /// Open the image in Preview from a temporary file; nothing is saved anywhere the user keeps.
+    static func openFullSize(_ png: Data) {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Llasso preview \(UUID().uuidString.prefix(6)).png")
+        guard (try? png.write(to: url)) != nil else { return }
+        NSWorkspace.shared.open(url)
     }
 
     private func diffColour(_ line: Substring) -> Color {
