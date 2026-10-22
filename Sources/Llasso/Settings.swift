@@ -24,15 +24,18 @@ final class Settings: ObservableObject {
     @Published var voiceOut: VoiceOut { didSet { defaults.set(voiceOut.rawValue, forKey: "voiceOut") } }
     @Published var ttsModel: String { didSet { defaults.set(ttsModel, forKey: "ttsModel") } }
     @Published var ttsVoice: String { didSet { defaults.set(ttsVoice, forKey: "ttsVoice") } }
+    @Published var imageModel: String { didSet { defaults.set(imageModel, forKey: "imageModel") } }
     @Published private(set) var hasKey = false
 
     static let defaultModel = "anthropic/claude-sonnet-5.5"
+    static let defaultImageModel = "google/gemini-3.1-flash-image"
 
     private init() {
         model = defaults.string(forKey: "model") ?? Settings.defaultModel
         voiceOut = VoiceOut(rawValue: defaults.string(forKey: "voiceOut") ?? "") ?? .system
         ttsModel = defaults.string(forKey: "ttsModel") ?? "elevenlabs/eleven-v4-turbo"
         ttsVoice = defaults.string(forKey: "ttsVoice") ?? ""
+        imageModel = defaults.string(forKey: "imageModel") ?? Settings.defaultImageModel
         hasKey = !apiKey.isEmpty
     }
 
@@ -107,7 +110,8 @@ enum History {
         return base.appendingPathComponent("Llasso", isDirectory: true)
     }
 
-    static func append(prompt: String, verb: Verb?, context: ScreenContext, answer: String, model: String) {
+    static func append(prompt: String, verb: Verb?, context: ScreenContext, answer: String, model: String,
+                       actions: [String] = []) {
         let entry: [String: Any] = [
             "at": ISO8601DateFormatter().string(from: Date()),
             "prompt": prompt,
@@ -116,6 +120,8 @@ enum History {
             "target": context.tag,
             "model": model,
             "answer": answer,
+            "kind": context.kind.rawValue,
+            "actions": actions,
         ]
         guard var line = try? JSONSerialization.data(withJSONObject: entry) else { return }
         line.append(0x0A)

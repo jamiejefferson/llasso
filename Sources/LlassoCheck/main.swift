@@ -71,6 +71,57 @@ if let req = try? client.chatRequest(model: "anthropic/claude-sonnet-5.5", messa
 }
 check("missing key throws", (try? OpenRouterClient(apiKey: "").chatRequest(model: "m", messages: [], stream: false)) == nil)
 
+// Tool calls in the stream
+check("sse tool delta", SSE.parse(line: #"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"propose_text","arguments":"{\"te"}}]}}]}"#)
+      == .toolDelta(index: 0, id: "c1", name: "propose_text", arguments: #"{"te"#))
+var acc = ToolCallAccumulator()
+acc.add(index: 0, id: "c1", name: "propose_text", arguments: #"{"text":"#)
+acc.add(index: 0, id: nil, name: nil, arguments: #""Hi","summary":"s"}"#)
+acc.add(index: 1, id: nil, name: "point_at", arguments: "{}")
+check("tool calls join", acc.result.count == 2 && acc.result[0].args["text"] as? String == "Hi" && acc.result[1].id == "call_1")
+let replay: [ChatMessage] = [.assistant("", calls: acc.result), .toolResult(id: "c1", "ok")]
+if let req = try? client.chatRequest(model: "m", messages: replay, stream: true, tools: [BuiltinTool.proposeText.schema]),
+   let obj = try? JSONSerialization.jsonObject(with: req.httpBody!) as? [String: Any],
+   let ms = obj["messages"] as? [[String: Any]] {
+    check("assistant tool_calls sent", (ms[0]["tool_calls"] as? [[String: Any]])?.count == 2)
+    check("tool result sent", ms[1]["role"] as? String == "tool" && ms[1]["tool_call_id"] as? String == "c1")
+    check("tools sent", (obj["tools"] as? [[String: Any]])?.count == 1)
+} else { check("tool request builds", false) }
+
+// Proposals
+check("text proposal", BuiltinTool.proposeText.proposal(["text": "New", "summary": "Tightened"]) == .text(text: "New", summary: "Tightened"))
+check("cells proposal stringifies", BuiltinTool.setCells.proposal(["rows": [[1, "=SUM(A1:A3)"]], "summary": "s"])
+      == .cells(start: nil, rows: [["1", "=SUM(A1:A3)"]], summary: "s"))
+check("cells only for sheets", !BuiltinTool.available(for: .webPage).contains(.setCells)
+      && BuiltinTool.available(for: .spreadsheet).contains(.setCells))
+check("mcp names", ToolName.qualified(server: "Paper", tool: "write_html") == "Paper__write_html"
+      && ToolName.split("Paper__write_html")! == ("Paper", "write_html"))
+
+// Cells
+check("cell parse", CellRef.parse("AB12")! == (28, 12) && CellRef.parse("$B$2")! == (2, 2))
+check("cell name", CellRef.name(col: 28, row: 12) == "AB12" && CellRef.name(col: 1, row: 1) == "A1")
+check("top left", CellRef.topLeft(of: "B2:D9") == "B2")
+
+// Classifying the box
+var k = ScreenContext(appName: "Notes", bundleID: "com.apple.Notes")
+k.canReplaceText = true
+check("editable text", k.kind == .editableText)
+var w = ScreenContext(appName: "Safari", bundleID: "com.apple.Safari", url: "https://bbc.co.uk")
+w.roles = ["AXStaticText"]
+check("web page", w.kind == .webPage)
+w.roles = ["AXImage"]
+check("image on a page", w.kind == .image)
+check("excel is a sheet", ScreenContext(appName: "Excel", bundleID: "com.microsoft.Excel").kind == .spreadsheet)
+check("google sheets", ScreenContext(appName: "Chrome", url: "https://docs.google.com/spreadsheets/d/x").kind == .spreadsheet)
+check("image file", ScreenContext(appName: "Preview", documentPath: "/tmp/a.JPG").kind == .image)
+var d = ScreenContext(appName: "Paper", bundleID: "x")
+d.integration = "Paper"
+check("design with tools", d.kind == .design && d.tag.contains("Paper connected"))
+
+// Image responses
+let imgJSON = #"{"choices":[{"message":{"images":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AQID"}}]}}]}"#
+check("image parsed", OpenRouterClient.firstImage(inResponse: Data(imgJSON.utf8)) == Data([1, 2, 3]))
+
 // Live call, only with a key.
 if let key = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"], !key.isEmpty {
     let model = ProcessInfo.processInfo.environment["LLASSO_MODEL"] ?? "anthropic/claude-sonnet-5.5"
@@ -90,6 +141,25 @@ if let key = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"], !key.isE
     sem.wait()
     print("live answer: \(answer) \(liveError.map { "error: \($0)" } ?? "")")
     check("live stream returns text", liveError == nil && !answer.isEmpty)
+
+    // A live turn that should end in a tool call.
+    var calls: [ToolCall] = []
+    let sem2 = DispatchSemaphore(value: 0)
+    Task {
+        do {
+            for try await chunk in live.streamTurn(model: model, messages: [
+                .system(Brief.systemPrompt),
+                .user("Selected text: 'teh quick brwn fox'. Request: fix the spelling."),
+            ], tools: BuiltinTool.available(for: .editableText).map(\.schema)) {
+                if case .tools(let c) = chunk { calls = c }
+            }
+        } catch { liveError = error }
+        sem2.signal()
+    }
+    sem2.wait()
+    print("live tool call: \(calls.map { "\($0.name) \($0.arguments)" })")
+    check("live turn proposes text", calls.first?.name == "propose_text"
+          && (calls.first?.args["text"] as? String)?.lowercased().contains("quick brown fox") == true)
 } else {
     print("SKIP live call (no OPENROUTER_API_KEY)")
 }

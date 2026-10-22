@@ -91,6 +91,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--draw") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { Controller.shared.begin() }
         }
+        if CommandLine.arguments.contains("--acttest") {
+            Task { @MainActor in await SelfTest.act(); NSApp.terminate(nil) }
+        }
+        if CommandLine.arguments.contains("--mcptest") {
+            Task { @MainActor in await SelfTest.mcp(); NSApp.terminate(nil) }
+        }
         if CommandLine.arguments.contains("--selftest") {
             Task { @MainActor in await SelfTest.run(); NSApp.terminate(nil) }
         }
@@ -130,7 +136,7 @@ enum SettingsWindow {
 
     static func show() {
         if window == nil {
-            let w = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 520, height: 560),
+            let w = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 520, height: 720),
                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
             w.title = "Llasso Settings"
             w.isReleasedWhenClosed = false
@@ -161,6 +167,7 @@ final class SettingsForm: ObservableObject {
 struct SettingsView: View {
     @ObservedObject private var settings = Settings.shared
     @ObservedObject private var form = SettingsForm()
+    @ObservedObject private var integrations = Integrations.shared
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -177,8 +184,34 @@ struct SettingsView: View {
                     .disabled(form.key.isEmpty)
                 }
                 TextField("Model", text: $settings.model)
-                Text("Any OpenRouter model that reads images. Default: \(Settings.defaultModel).")
+                Text("Any OpenRouter model that reads images and calls tools. Default: \(Settings.defaultModel).")
                     .font(.caption).foregroundStyle(.secondary)
+                TextField("Image model", text: $settings.imageModel)
+                Text("Edits boxed images. Default: \(Settings.defaultImageModel).")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Connected apps") {
+                ForEach(integrations.all) { i in
+                    HStack(alignment: .top) {
+                        Image(systemName: icon(integrations.status[i.name]))
+                            .foregroundStyle(integrations.status[i.name] == "Connected" || integrations.status[i.name] == "Ready"
+                                             ? Color.green : Color.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(i.name)
+                            Text(integrations.status[i.name] ?? "")
+                                .font(.caption).foregroundStyle(.secondary)
+                            if integrations.status[i.name] == "Needs set-up" {
+                                Text(i.setup).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+                HStack {
+                    Text("Llasso drives these apps through their own tools, and also picks up any local server you have added to Claude Code.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Recheck") { integrations.recheck() }
+                }
             }
             Section("Speaking answers") {
                 Picker("Voice", selection: $settings.voiceOut) {
@@ -210,7 +243,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520, height: 560)
+        .frame(width: 520, height: 720)
         .onReceive(timer) { _ in
             form.refresh()
         }
@@ -226,6 +259,14 @@ struct SettingsView: View {
             }
             Spacer()
             if !ok { Button("Allow", action: grant) }
+        }
+    }
+
+    private func icon(_ status: String?) -> String {
+        switch status {
+        case "Connected", "Ready": return "bolt.circle.fill"
+        case "Needs set-up": return "exclamationmark.circle"
+        default: return "circle"
         }
     }
 
@@ -280,6 +321,110 @@ enum SelfTest {
             report["error"] = error.localizedDescription
         }
         write(report)
+    }
+
+    /// Opens a TextEdit document and an Excel workbook, runs a real model turn on the
+    /// text and writes a formula into the sheet, then closes both without saving.
+    /// Text goes back by Accessibility only, never by a synthetic paste.
+    static func act() async {
+        var r: [String: Any] = [:]
+        // Text in place
+        do {
+            _ = try await Shell.osascript("""
+            tell application "TextEdit"
+                activate
+                make new document with properties {text:"teh quick brwn fox"}
+            end tell
+            """)
+            try await Task.sleep(nanoseconds: 1_200_000_000)
+            guard let te = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.TextEdit").first else {
+                throw ActionError.failed("TextEdit didn't start")
+            }
+            let appEl = AXUIElementCreateApplication(te.processIdentifier)
+            if let focused: AXUIElement = ContextReader.attr(appEl, kAXFocusedUIElementAttribute) {
+                var range = CFRange(location: 4, length: 14)   // "quick brwn fox"
+                if let v = AXValueCreate(.cfRange, &range) {
+                    AXUIElementSetAttributeValue(focused, kAXSelectedTextRangeAttribute as CFString, v)
+                }
+            }
+            let box = NSScreen.main.map { CGRect(x: $0.frame.midX - 300, y: $0.frame.midY - 200, width: 600, height: 400) } ?? .zero
+            let ctx = ContextReader.read(app: te, selection: box)
+            r["text.kind"] = ctx.kind.rawValue
+            r["text.selected"] = ctx.selectedText ?? ""
+            r["text.canReplace"] = ctx.canReplaceText
+            var calls: [ToolCall] = []
+            for try await chunk in Settings.shared.client.streamTurn(
+                model: Settings.shared.model,
+                messages: [.system(Brief.systemPrompt), .user(Brief.userText(prompt: "fix the spelling", verb: nil, context: ctx))],
+                tools: BuiltinTool.available(for: ctx.kind).map(\.schema)) {
+                if case .tools(let c) = chunk { calls = c }
+            }
+            r["text.tool"] = calls.first.map { "\($0.name) \($0.arguments)" } ?? "none"
+            if let call = calls.first, case .text(let text, _)? = BuiltinTool.named(call.name)?.proposal(call.args) {
+                try await Actuator.replaceText(text, context: ctx, app: te, allowPaste: false)
+                if let focused: AXUIElement = ContextReader.attr(appEl, kAXFocusedUIElementAttribute) {
+                    r["text.after"] = (ContextReader.attr(focused, kAXValueAttribute) as String?) ?? ""
+                }
+            }
+        } catch { r["text.error"] = error.localizedDescription }
+        _ = try? await Shell.osascript("tell application \"TextEdit\" to close front document saving no")
+
+        // Spreadsheet
+        let excelWasRunning = !NSRunningApplication.runningApplications(withBundleIdentifier: "com.microsoft.Excel").isEmpty
+        do {
+            _ = try await Shell.osascript("""
+            tell application "Microsoft Excel"
+                set wb to make new workbook
+                set value of range "A1" of active sheet to 10
+                set value of range "A2" of active sheet to 20
+                set value of range "A3" of active sheet to 30
+                select range "A1:A3" of active sheet
+            end tell
+            """, timeout: 60)
+            let sel = Sheets.read(.excel)
+            r["sheet.address"] = sel?.address ?? "nil"
+            r["sheet.values"] = sel?.values ?? []
+            var ctx = ScreenContext(appName: "Microsoft Excel", bundleID: "com.microsoft.Excel")
+            ctx.sheet = sel
+            r["sheet.kind"] = ctx.kind.rawValue
+            _ = try await Actuator.cells(start: "A4", rows: [["=SUM(A1:A3)"]], to: .writeCells(app: "Excel"),
+                                         context: ctx, app: nil)
+            r["sheet.A4"] = try await Shell.osascript("tell application \"Microsoft Excel\" to get value of range \"A4\" of active sheet")
+        } catch { r["sheet.error"] = error.localizedDescription }
+        _ = try? await Shell.osascript("tell application \"Microsoft Excel\" to close active workbook saving no")
+        if !excelWasRunning { _ = try? await Shell.osascript("tell application \"Microsoft Excel\" to quit saving no") }
+
+        try? FileManager.default.createDirectory(at: History.folder, withIntermediateDirectories: true)
+        if let data = try? JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: History.folder.appendingPathComponent("acttest.json"))
+        }
+    }
+
+    /// Connect to every integration that has a server, list its tools and call one
+    /// read-only tool, and write what happened to mcptest.json.
+    static func mcp() async {
+        var report: [String: Any] = [:]
+        for i in Integrations.shared.all {
+            var r: [String: Any] = ["status": Integrations.shared.status[i.name] ?? ""]
+            if let c = await Integrations.shared.client(for: i) {
+                r["tools"] = c.tools.count
+                r["readOnly"] = c.tools.filter(\.readOnly).count
+                r["hasGuide"] = c.instructions != nil
+                let probe = i.name == "Paper" ? "get_basic_info" : "status"
+                if c.tools.contains(where: { $0.name == probe }) {
+                    do {
+                        let out = try await c.callTool(probe, arguments: [:])
+                        r["probe"] = String(out.text.prefix(300))
+                    } catch { r["probeError"] = error.localizedDescription }
+                }
+            }
+            report[i.name] = r
+        }
+        Integrations.shared.stopAll()
+        try? FileManager.default.createDirectory(at: History.folder, withIntermediateDirectories: true)
+        if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: History.folder.appendingPathComponent("mcptest.json"))
+        }
     }
 
     private static func write(_ report: [String: Any]) {

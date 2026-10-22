@@ -38,6 +38,17 @@ final class Controller {
     private var pauseTimer: Timer?
     private var lastSpeechChange = Date()
 
+    // Acting
+    private var integration: Integration?
+    private var mcpTask: Task<MCPClient?, Never>?
+    private var mcp: MCPClient?
+    private var approveAll = false
+    /// Resumed by the card when the user answers a question or approves a step.
+    private var decision: CheckedContinuation<String?, Never>?
+    private var proposal: Proposal?
+    private var editedImage: Data?
+    private var actions: [String] = []
+
     private init() {
         pill.onSend = { [weak self] in self?.send() }
         pill.onCancel = { [weak self] in self?.cancel() }
@@ -50,6 +61,12 @@ final class Controller {
             self.card.copied = true
         }
         card.onFollowUp = { [weak self] text in self?.followUp(text) }
+        card.onAnswer = { [weak self] answer in self?.decide(answer) }
+        card.onStep = { [weak self] run, all in
+            if all { self?.approveAll = true }
+            self?.decide(run ? "run" : "skip")
+        }
+        card.onDestination = { [weak self] d in self?.deliver(to: d) }
         speaker.onError = { [weak self] message in self?.card.error = "Voice: " + message }
         voice.onUpdate = { [weak self] text in
             guard let self, self.phase == .selecting || self.phase == .prompting, !self.pill.typed else { return }
@@ -244,16 +261,39 @@ final class Controller {
             let ctx = ContextReader.read(app: app, selection: global)
             await MainActor.run {
                 guard let self, self.phase == .prompting || self.phase == .answering else { return }
+                var ctx = ctx
+                ctx.integration = self.context.integration
+                ctx.integrationHint = self.context.integrationHint
                 self.context = ctx
-                self.pill.tag = ctx.tag
-                self.pill.tagKnown = ctx.documentPath != nil || ctx.url != nil
+                self.pill.tag = ctx.tag + "  ·  " + ctx.kind.rawValue
+                self.pill.tagKnown = ctx.documentPath != nil || ctx.url != nil || ctx.integration != nil
             }
         }
+        connectIntegration(for: app)
         pill.tag = context.tag
         captureTask = Task { try? await Capture.take(screen: screen, selection: global) }
 
         showPill(near: global, on: screen)
         startPauseTimer()
+    }
+
+    /// Start the app's MCP server in the background while the user talks.
+    private func connectIntegration(for app: NSRunningApplication?) {
+        integration = Integrations.shared.integration(bundleID: app?.bundleIdentifier, appName: app?.localizedName)
+        guard let integration else { return }
+        guard integration.transport != nil else {
+            context.integrationHint = integration.setup
+            pill.notice = "\(integration.name) can give Llasso its own tools. Set it up under Settings → Connected apps."
+            return
+        }
+        mcpTask = Task { [weak self] in
+            let client = await Integrations.shared.client(for: integration)
+            guard let self, client != nil, self.phase == .prompting || self.phase == .answering else { return client }
+            self.context.integration = integration.name
+            self.pill.tag = self.context.tag + "  ·  " + self.context.kind.rawValue
+            self.pill.tagKnown = true
+            return client
+        }
     }
 
     private func showPill(near rect: CGRect, on screen: NSScreen) {
@@ -314,8 +354,13 @@ final class Controller {
                 return
             }
             capture = cap
+            if let task = mcpTask { mcp = await task.value }
+            var guides: [String] = []
+            if let mcp, let text = mcp.instructions, !text.isEmpty {
+                guides.append("Guide from \(mcp.name) for its own tools (prefixed \(mcp.name)__):\n" + text)
+            }
             messages = Brief.firstMessages(prompt: prompt, verb: pill.verb, context: context,
-                                           crop: cap.crop, screen: cap.screen, spoken: spoken)
+                                           crop: cap.crop, screen: cap.screen, spoken: spoken, appGuides: guides)
             run()
         }
     }
@@ -328,6 +373,8 @@ final class Controller {
         card.title = text
         card.answer = ""
         card.copied = false
+        card.resetAction()
+        card.log = []
         run()
     }
 
@@ -340,33 +387,227 @@ final class Controller {
         }
         card.state = .thinking
         card.error = nil
+        streamTask = Task { await agentLoop() }
+    }
+
+    /// Stream a turn; run the tools it asks for; repeat until the model stops asking,
+    /// or until it proposes something the user must place.
+    private func agentLoop() async {
+        let settings = Settings.shared
         let client = settings.client
         let model = settings.model
-        let msgs = messages
         let speak = spoken && settings.voiceOut != .off
-        streamTask = Task {
-            var sentences = SentenceBuffer()
-            var answer = ""
-            do {
-                for try await piece in client.streamChat(model: model, messages: msgs) {
-                    if Task.isCancelled { break }
-                    answer += piece
-                    card.answer = answer
-                    card.state = .streaming
-                    if speak { sentences.append(piece).forEach(speaker.say) }
+        var tools = BuiltinTool.available(for: context.kind).map(\.schema)
+        if let mcp, let integration { tools += Integrations.shared.toolSchemas(mcp, blocked: integration.blocked) }
+        var shown = ""
+        do {
+            for _ in 0..<16 {
+                var sentences = SentenceBuffer()
+                var text = ""
+                var calls: [ToolCall] = []
+                let prefix = shown.isEmpty ? "" : shown + "\n\n"
+                for try await chunk in client.streamTurn(model: model, messages: messages, tools: tools) {
+                    if Task.isCancelled { return }
+                    switch chunk {
+                    case .text(let piece):
+                        text += piece
+                        card.answer = prefix + text
+                        card.state = .streaming
+                        if speak { sentences.append(piece).forEach(speaker.say) }
+                    case .tools(let c):
+                        calls = c
+                    }
                 }
                 if speak, !Task.isCancelled, let rest = sentences.flush() { speaker.say(rest) }
+                if !text.isEmpty { shown = prefix + text }
+                messages.append(.assistant(text, calls: calls))
+                if calls.isEmpty { break }
+
+                var images: [Data] = []
+                var stop = false
+                for call in calls {
+                    if Task.isCancelled { return }
+                    let outcome = await handle(call)
+                    messages.append(.toolResult(id: call.id, outcome.text))
+                    images += outcome.images
+                    if outcome.endsTurn { stop = true }
+                }
+                if !images.isEmpty {
+                    messages.append(ChatMessage(role: "user", parts: images.prefix(3).map { .png($0) }
+                        + [.text("Images returned by the tool calls above.")]))
+                }
+                if stop { break }
+                card.state = .thinking
+            }
+            card.working = nil
+            card.state = .done
+            History.append(prompt: lastPrompt, verb: pill.verb, context: context, answer: shown, model: model, actions: actions)
+        } catch {
+            if Task.isCancelled { return }
+            card.working = nil
+            fail(error.localizedDescription)
+        }
+    }
+
+    private struct Outcome {
+        var text: String
+        var images: [Data] = []
+        /// A proposal is waiting on the card; the model's turn ends there.
+        var endsTurn = false
+    }
+
+    private func handle(_ call: ToolCall) async -> Outcome {
+        let args = call.args
+        if let builtin = BuiltinTool.named(call.name) {
+            switch builtin {
+            case .askUser:
+                let q = args["question"] as? String ?? "Which do you mean?"
+                let options = (args["options"] as? [String] ?? []).prefix(4)
+                card.question = (q, Array(options))
                 card.state = .done
-                messages.append(.assistant(answer))
-                History.append(prompt: lastPrompt, verb: pill.verb, context: context, answer: answer, model: model)
+                let answer = await waitForDecision()
+                card.question = nil
+                guard let answer else { return Outcome(text: "The user closed the question.", endsTurn: true) }
+                card.log.append("› " + answer)
+                card.state = .thinking
+                return Outcome(text: "The user answered: \(answer)")
+            case .pointAt:
+                point(x: args["x"] as? Double ?? 0.5, y: args["y"] as? Double ?? 0.5, label: args["label"] as? String ?? "Here")
+                return Outcome(text: "Ringed the point on screen.")
+            case .proposeText, .editImage, .setCells, .runScript:
+                guard let p = builtin.proposal(args) else { return Outcome(text: "The arguments were incomplete.") }
+                return await propose(p)
+            }
+        }
+        guard let mcp, let (server, tool) = ToolName.split(call.name), server == ToolName.clean(mcp.name),
+              let spec = mcp.tools.first(where: { $0.name == tool }) else {
+            return Outcome(text: "There is no tool called \(call.name).")
+        }
+        if !spec.readOnly && !approveAll {
+            card.step = ("\(mcp.name) wants to \(tool.replacingOccurrences(of: "_", with: " "))", Self.brief(args))
+            card.state = .done
+            let choice = await waitForDecision()
+            card.step = nil
+            guard choice == "run" else {
+                card.log.append("– skipped \(mcp.name) \(tool)")
+                return Outcome(text: "The user skipped this step.", endsTurn: choice == nil)
+            }
+        }
+        card.state = .thinking
+        card.working = "\(mcp.name): \(tool.replacingOccurrences(of: "_", with: " "))…"
+        defer { card.working = nil }
+        do {
+            let r = try await mcp.callTool(tool, arguments: args)
+            card.log.append((r.isError ? "✕ " : "✓ ") + "\(mcp.name) \(tool)")
+            if !spec.readOnly { actions.append("\(mcp.name).\(tool)") }
+            return Outcome(text: String(r.text.prefix(20_000)).ifEmpty("Done."), images: r.images)
+        } catch {
+            card.log.append("✕ \(mcp.name) \(tool)")
+            return Outcome(text: "The tool failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Show a proposal on the card. Images are made first so the card can preview them.
+    private func propose(_ p: Proposal) async -> Outcome {
+        proposal = p
+        editedImage = nil
+        var cardP = ProposalCard(summary: p.summary, destinations: Actuator.destinations(for: p, context: context))
+        switch p {
+        case .text(let text, _):
+            cardP.text = text
+            cardP.original = context.selectedText ?? context.fieldValue
+        case .image(let instruction, _):
+            guard let crop = capture?.crop else { return Outcome(text: "There is no image to edit.") }
+            card.working = "Editing the image…"
+            card.state = .thinking
+            do {
+                let image = try await Settings.shared.client.image(model: Settings.shared.imageModel,
+                                                                   prompt: instruction, source: crop)
+                card.working = nil
+                editedImage = image
+                cardP.image = image
             } catch {
-                if Task.isCancelled { return }
-                fail(error.localizedDescription)
+                card.working = nil
+                card.error = "Image edit: " + error.localizedDescription
+                return Outcome(text: "The image model failed: \(error.localizedDescription)", endsTurn: true)
+            }
+        case .cells(_, let rows, _):
+            cardP.rows = rows
+        case .script(let source, _):
+            cardP.script = source
+        }
+        card.proposal = cardP
+        return Outcome(text: "Shown to the user, who will choose where it goes. Do not repeat it.", endsTurn: true)
+    }
+
+    /// The user tapped a destination on the proposal.
+    private func deliver(to d: Destination) {
+        guard let p = proposal else { return }
+        let ctx = context
+        let app = frontApp
+        let image = editedImage
+        card.working = d == .run ? "Running…" : "Working…"
+        Task {
+            do {
+                let result: String
+                switch p {
+                case .text(let text, _): result = try await Actuator.text(text, to: d, context: ctx, app: app)
+                case .image:
+                    guard let image else { throw ActionError.failed("The edited image is missing.") }
+                    let fit = self.capture.flatMap { NSBitmapImageRep(data: $0.crop) }
+                        .map { CGSize(width: $0.pixelsWide, height: $0.pixelsHigh) }
+                    result = try await Actuator.image(image, to: d, context: ctx, app: app, fit: fit, points: self.box?.rect.size)
+                case .cells(let start, let rows, _): result = try await Actuator.cells(start: start, rows: rows, to: d, context: ctx, app: app)
+                case .script(let source, _): result = try await Actuator.run(script: source)
+                }
+                card.working = nil
+                card.proposal?.done = result
+                actions.append(d.label)
+                messages.append(.user("(Llasso note, not from the user) The user chose “\(d.label)”. \(result)"))
+                History.append(prompt: lastPrompt, verb: pill.verb, context: ctx, answer: card.answer,
+                               model: Settings.shared.model, actions: actions)
+                // Leaving the boxed app's change in view: drop the outline once text went back in place.
+                if case .replaceInPlace = d { overlays.forEach { $0.orderOut(nil) } }
+            } catch {
+                card.working = nil
+                card.error = error.localizedDescription
             }
         }
     }
 
+    private func waitForDecision() async -> String? {
+        await withCheckedContinuation { cont in
+            decision?.resume(returning: nil)
+            decision = cont
+        }
+    }
+
+    private func decide(_ answer: String?) {
+        let d = decision
+        decision = nil
+        d?.resume(returning: answer)
+    }
+
+    /// Ring a point given as fractions of the boxed image.
+    private func point(x: Double, y: Double, label: String) {
+        guard let box else { return }
+        let fx = min(1, max(0, x)), fy = min(1, max(0, y))
+        let p = CGPoint(x: box.rect.minX + box.rect.width * fx, y: box.rect.maxY - box.rect.height * fy)
+        Pointer.ring(at: p, label: label)
+        card.log.append("◎ " + label)
+    }
+
+    /// Tool arguments in a few readable lines for the approval step.
+    static func brief(_ args: [String: Any]) -> String {
+        args.sorted { $0.key < $1.key }.map { k, v in
+            let s = (v as? String) ?? ((try? JSONSerialization.data(withJSONObject: v, options: [.fragmentsAllowed]))
+                .map { String(decoding: $0, as: UTF8.self) } ?? "\(v)")
+            return "\(k): \(s.prefix(160))"
+        }.joined(separator: "\n")
+    }
+
     private func stopAnswer() {
+        decide(nil)
         streamTask?.cancel()
         streamTask = nil
         speaker.stop()
@@ -383,6 +624,8 @@ final class Controller {
         card.error = nil
         card.copied = false
         card.askingMore = false
+        card.resetAction()
+        card.log = []
         card.state = .thinking
         card.title = "…"
         let panel = cardPanel ?? FloatingPanel(size: CGSize(width: 520, height: 120))
@@ -400,7 +643,9 @@ final class Controller {
 
     private func cancel(keepingOffer: Bool) {
         holding = false
+        decide(nil)
         if !keepingOffer { offer?.dismiss() }
+        Pointer.clear()
         pauseTimer?.invalidate()
         pauseTimer = nil
         streamTask?.cancel()
@@ -424,5 +669,17 @@ final class Controller {
         box = nil
         capture = nil
         messages = []
+        mcpTask?.cancel()
+        mcpTask = nil
+        mcp = nil
+        integration = nil
+        approveAll = false
+        proposal = nil
+        editedImage = nil
+        actions = []
     }
+}
+
+extension String {
+    func ifEmpty(_ fallback: String) -> String { isEmpty ? fallback : self }
 }

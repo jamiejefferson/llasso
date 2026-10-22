@@ -161,10 +161,45 @@ final class CardModel: ObservableObject {
     @Published var askingMore = false
     @Published var copied = false
 
+    /// What the agent proposes, waiting for the user to pick where it goes.
+    @Published var proposal: ProposalCard?
+    /// A question from the agent, with tappable answers.
+    @Published var question: (text: String, options: [String])?
+    /// An app change through its MCP server, waiting for approval.
+    @Published var step: (title: String, detail: String)?
+    /// One line per tool that has run in this job.
+    @Published var log: [String] = []
+    /// A slow piece of work in progress ("Editing the image…").
+    @Published var working: String?
+
     var onCopy: (() -> Void)?
     var onStop: (() -> Void)?
     var onClose: (() -> Void)?
     var onFollowUp: ((String) -> Void)?
+    var onDestination: ((Destination) -> Void)?
+    var onAnswer: ((String) -> Void)?
+    /// true runs this step, false skips it; `all` approves the rest of the job's steps too.
+    var onStep: ((_ run: Bool, _ all: Bool) -> Void)?
+
+    func resetAction() {
+        proposal = nil
+        question = nil
+        step = nil
+        working = nil
+    }
+}
+
+/// The preview a proposal carries on the card.
+struct ProposalCard {
+    var summary: String
+    var text: String?
+    var original: String?
+    var image: Data?
+    var rows: [[String]]?
+    var script: String?
+    var destinations: [Destination]
+    /// Set once a destination has been used: what happened.
+    var done: String?
 }
 
 struct CardView: View {
@@ -207,6 +242,43 @@ struct CardView: View {
                 .frame(maxHeight: 360)
                 .fixedSize(horizontal: false, vertical: true)
             }
+            if !model.log.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(model.log.suffix(6).enumerated()), id: \.offset) { _, line in
+                        Text(line).font(.system(size: 12, design: .monospaced)).foregroundColor(.llMuted)
+                            .lineLimit(1).truncationMode(.tail)
+                    }
+                }
+            }
+            if let working = model.working {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(working).font(.system(size: 14)).foregroundColor(.llMuted)
+                }
+            }
+            if let p = model.proposal { proposalView(p) }
+            if let q = model.question {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(q.text).font(.system(size: 15, weight: .medium)).foregroundColor(.llPaper)
+                    FlowRow(items: q.options) { option in
+                        chip(option, primary: false) { model.onAnswer?(option) }
+                    }
+                }
+            }
+            if let step = model.step {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(step.title).font(.system(size: 14, weight: .semibold)).foregroundColor(.llAmber)
+                    Text(step.detail).font(.system(size: 12, design: .monospaced)).foregroundColor(Color(white: 0.73))
+                        .lineLimit(6).textSelection(.enabled)
+                    HStack(spacing: 8) {
+                        chip("Run", primary: true) { model.onStep?(true, false) }
+                        chip("Run all", primary: false) { model.onStep?(true, true) }
+                        chip("Skip", primary: false) { model.onStep?(false, false) }
+                    }
+                }
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.llWell))
+            }
             if let error = model.error {
                 Text(error).font(.system(size: 14)).foregroundColor(Color(red: 0.95, green: 0.55, blue: 0.5))
                     .textSelection(.enabled)
@@ -227,7 +299,9 @@ struct CardView: View {
                 if model.state == .thinking || model.state == .streaming {
                     chip("Stop", primary: true) { model.onStop?() }
                 } else {
-                    chip(model.copied ? "Copied" : "Copy", primary: true) { model.onCopy?() }
+                    if !model.answer.isEmpty {
+                        chip(model.copied ? "Copied" : "Copy", primary: model.proposal == nil) { model.onCopy?() }
+                    }
                     chip(model.askingMore ? "Send" : "Ask more", primary: false) {
                         if model.askingMore { submitFollowUp() } else { model.askingMore = true }
                     }
@@ -240,6 +314,54 @@ struct CardView: View {
         .frame(width: 520, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 16).fill(Color.llInk))
         .reportsHeight(onHeight)
+    }
+
+    @ViewBuilder
+    private func proposalView(_ p: ProposalCard) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if !p.summary.isEmpty {
+                Text(p.summary).font(.system(size: 14, weight: .semibold)).foregroundColor(.llAmber)
+            }
+            if let original = p.original, !original.isEmpty {
+                Text(original).font(.system(size: 13)).strikethrough().foregroundColor(.llMuted)
+                    .lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if let text = p.text {
+                ScrollView {
+                    Text(text).font(.system(size: 14)).foregroundColor(.llPaper).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 220).fixedSize(horizontal: false, vertical: true)
+            }
+            if let data = p.image, let image = NSImage(data: data) {
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: 280)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+            if let rows = p.rows {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(rows.prefix(12).enumerated()), id: \.offset) { _, row in
+                        Text(row.joined(separator: "   ")).font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(.llPaper).lineLimit(1)
+                    }
+                }
+            }
+            if let script = p.script {
+                ScrollView {
+                    Text(script).font(.system(size: 11, design: .monospaced)).foregroundColor(Color(white: 0.73))
+                        .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 140).fixedSize(horizontal: false, vertical: true)
+            }
+            if let done = p.done {
+                Text("✓ " + done).font(.system(size: 13)).foregroundColor(.llOK)
+            }
+            FlowRow(items: p.destinations) { d in
+                chip(d.label, primary: d == p.destinations.first && p.done == nil) { model.onDestination?(d) }
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.llWell))
     }
 
     private var rendered: AttributedString {
@@ -266,6 +388,45 @@ struct CardView: View {
                 .overlay(Capsule().stroke(primary ? Color.clear : Color.llLine))
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// Lays chips out left to right and wraps them onto new lines.
+struct FlowRow<Item: Hashable, Content: View>: View {
+    var items: [Item]
+    var content: (Item) -> Content
+
+    var body: some View {
+        WrapLayout(spacing: 8) {
+            ForEach(items, id: \.self) { content($0) }
+        }
+    }
+}
+
+struct WrapLayout: Layout {
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? 480
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
+        for v in subviews {
+            let s = v.sizeThatFits(.unspecified)
+            if x > 0 && x + s.width > width { x = 0; y += rowHeight + spacing; rowHeight = 0 }
+            x += s.width + spacing
+            rowHeight = max(rowHeight, s.height)
+        }
+        return CGSize(width: width, height: y + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, rowHeight: CGFloat = 0
+        for v in subviews {
+            let s = v.sizeThatFits(.unspecified)
+            if x > bounds.minX && x + s.width > bounds.maxX { x = bounds.minX; y += rowHeight + spacing; rowHeight = 0 }
+            v.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(s))
+            x += s.width + spacing
+            rowHeight = max(rowHeight, s.height)
+        }
     }
 }
 

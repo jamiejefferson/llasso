@@ -97,10 +97,21 @@ enum ContextReader {
                 ctx.documentPath = URL(string: doc)?.path ?? doc
             }
         }
-        if let focused: AXUIElement = attr(appEl, kAXFocusedUIElementAttribute),
-           let selected: String = attr(focused, kAXSelectedTextAttribute), !selected.isEmpty {
-            ctx.selectedText = selected
+        if let focused: AXUIElement = attr(appEl, kAXFocusedUIElementAttribute) {
+            let role: String? = attr(focused, kAXRoleAttribute)
+            ctx.focusedRole = role
+            if let selected: String = attr(focused, kAXSelectedTextAttribute), !selected.isEmpty {
+                ctx.selectedText = selected
+                ctx.canReplaceText = settable(focused, kAXSelectedTextAttribute) || editable(focused)
+            } else if role == "AXTextField" || role == "AXTextArea" || role == "AXComboBox",
+                      let value: String = attr(focused, kAXValueAttribute), value.count < 20_000,
+                      settable(focused, kAXValueAttribute), frameIntersects(focused, selection) {
+                // A plain field the box covers: its whole value can be rewritten.
+                ctx.fieldValue = value
+                ctx.canSetField = true
+            }
         }
+        if let sheetApp = Sheets.app(for: app.bundleIdentifier) { ctx.sheet = Sheets.read(sheetApp) }
 
         // Sample a 5 x 5 grid of points inside the box and describe what sits there.
         let mainHeight = NSScreen.screens.first?.frame.height ?? 0
@@ -113,10 +124,37 @@ enum ContextReader {
                 var hit: AXUIElement?
                 guard AXUIElementCopyElementAtPosition(appEl, x, y, &hit) == .success, let el = hit else { continue }
                 if ctx.url == nil { ctx.url = webURL(from: el) }
+                if let role: String = attr(el, kAXRoleAttribute), !ctx.roles.contains(role) { ctx.roles.append(role) }
                 if let line = describe(el), seen.insert(line).inserted { ctx.elements.append(line) }
             }
         }
         return ctx
+    }
+
+    static func settable(_ el: AXUIElement, _ name: String) -> Bool {
+        var ok: DarwinBoolean = false
+        return AXUIElementIsAttributeSettable(el, name as CFString, &ok) == .success && ok.boolValue
+    }
+
+    /// Web and Electron editors mark editable regions with AXEditableAncestor or a text role.
+    static func editable(_ el: AXUIElement) -> Bool {
+        if (attr(el, "AXEditableAncestor") as AXUIElement?) != nil { return true }
+        let role: String? = attr(el, kAXRoleAttribute)
+        return role == "AXTextArea" || role == "AXTextField"
+    }
+
+    /// Whether the element's frame overlaps the box (AppKit global coordinates).
+    static func frameIntersects(_ el: AXUIElement, _ box: CGRect) -> Bool {
+        var posRef: CFTypeRef?, sizeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, kAXPositionAttribute as CFString, &posRef) == .success,
+              AXUIElementCopyAttributeValue(el, kAXSizeAttribute as CFString, &sizeRef) == .success,
+              let posRef, let sizeRef else { return true }
+        var pos = CGPoint.zero, size = CGSize.zero
+        AXValueGetValue(posRef as! AXValue, .cgPoint, &pos)
+        AXValueGetValue(sizeRef as! AXValue, .cgSize, &size)
+        let mainHeight = NSScreen.screens.first?.frame.height ?? 0
+        let topLeftBox = Geometry.topLeftGlobal(box, mainScreenHeight: mainHeight)
+        return CGRect(origin: pos, size: size).intersects(topLeftBox)
     }
 
     /// "AXButton 'Save'" style line, or nil for anonymous containers.

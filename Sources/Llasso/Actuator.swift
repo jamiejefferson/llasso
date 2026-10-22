@@ -1,0 +1,470 @@
+import AppKit
+import ApplicationServices
+import LlassoKit
+
+/// Where a proposal can go. Llasso offers only the ones that work for the box.
+enum Destination: Hashable {
+    case replaceInPlace(app: String)
+    case pasteInto(app: String)
+    case replaceFile(name: String)
+    case copy
+    case newDocument
+    case saveFile
+    case writeCells(app: String)
+    case run
+
+    var label: String {
+        switch self {
+        case .replaceInPlace(let app): return "Replace in \(app)"
+        case .pasteInto(let app): return "Paste into \(app)"
+        case .replaceFile(let name): return "Save beside \(name)"
+        case .copy: return "Copy"
+        case .newDocument: return "New document"
+        case .saveFile: return "Save to Llasso folder"
+        case .writeCells(let app): return "Write to \(app)"
+        case .run: return "Run"
+        }
+    }
+}
+
+enum ActionError: Error, LocalizedError {
+    case failed(String)
+    var errorDescription: String? { if case .failed(let m) = self { return m }; return nil }
+}
+
+/// Carries out proposals in the app the user boxed.
+@MainActor
+enum Actuator {
+    /// Folder for saved results when no project resolved.
+    static var outputFolder: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/Llasso", isDirectory: true)
+    }
+
+    static func destinations(for p: Proposal, context c: ScreenContext) -> [Destination] {
+        let app = c.appName ?? "the app"
+        switch p {
+        case .text:
+            var d: [Destination] = []
+            if c.canReplaceText || c.canSetField { d.append(.replaceInPlace(app: app)) }
+            d += [.copy, .newDocument, .saveFile]
+            return d
+        case .image:
+            var d: [Destination] = []
+            if let path = c.documentPath, ContentKind.imageExtensions.contains((path as NSString).pathExtension.lowercased()) {
+                d.append(.replaceFile(name: (path as NSString).lastPathComponent))
+            }
+            if c.kind != .webPage && c.kind != .readOnlyText { d.append(.pasteInto(app: app)) }
+            d += [.copy, .saveFile]
+            return d
+        case .cells:
+            var d: [Destination] = []
+            if let s = c.sheet { d.append(.writeCells(app: s.app == .numbers ? "Numbers" : "Excel")) }
+            else { d.append(.pasteInto(app: app)) }
+            d.append(.copy)
+            return d
+        case .script:
+            return [.run]
+        }
+    }
+
+    // MARK: Text
+
+    static func text(_ text: String, to d: Destination, context c: ScreenContext, app: NSRunningApplication?) async throws -> String {
+        switch d {
+        case .replaceInPlace(let name):
+            try await replaceText(text, context: c, app: app)
+            return "Replaced the text in \(name)."
+        case .pasteInto(let name):
+            try await paste(.string(text), into: app)
+            return "Pasted into \(name)."
+        case .copy:
+            copy(.string(text))
+            return "Copied to the clipboard."
+        case .newDocument:
+            try newDocument(text)
+            return "Opened a new TextEdit document with the text."
+        case .saveFile:
+            let url = try save(Data(text.utf8), ext: "txt")
+            return "Saved \(url.lastPathComponent) in Documents/Llasso."
+        default:
+            throw ActionError.failed("That destination doesn't take text.")
+        }
+    }
+
+    /// Replace the selection through Accessibility, read it back to check, and fall back
+    /// to pasting over the selection, which works in browsers and Electron editors.
+    static func replaceText(_ text: String, context c: ScreenContext, app: NSRunningApplication?,
+                            allowPaste: Bool = true) async throws {
+        guard let app else { throw ActionError.failed("The app has closed.") }
+        app.activate()
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let appEl = AXUIElementCreateApplication(app.processIdentifier)
+        guard let focused: AXUIElement = ContextReader.attr(appEl, kAXFocusedUIElementAttribute) else {
+            throw ActionError.failed("\(c.appName ?? "The app") has no text field in focus any more. Click back into it and try again.")
+        }
+        if c.canReplaceText {
+            if AXUIElementSetAttributeValue(focused, kAXSelectedTextAttribute as CFString, text as CFTypeRef) == .success,
+               let value: String = ContextReader.attr(focused, kAXValueAttribute), value.contains(text) {
+                return
+            }
+            guard allowPaste else { throw ActionError.failed("Accessibility refused the change.") }
+            try await paste(.string(text), into: app)
+            return
+        }
+        if c.canSetField {
+            guard AXUIElementSetAttributeValue(focused, kAXValueAttribute as CFString, text as CFTypeRef) == .success else {
+                throw ActionError.failed("\(c.appName ?? "The app") refused the change.")
+            }
+            return
+        }
+        throw ActionError.failed("Llasso can't put text back in this app. Copy it instead.")
+    }
+
+    // MARK: Images
+
+    /// `fit` is the boxed area's pixel size: an image going back into an app is scaled to it,
+    /// because image models answer at their own size (often 1024 square).
+    static func image(_ png: Data, to d: Destination, context c: ScreenContext, app: NSRunningApplication?,
+                      fit: CGSize?, points: CGSize?) async throws -> String {
+        switch d {
+        case .replaceFile:
+            // The box may cover only part of the file, so the edit never overwrites it.
+            guard let path = c.documentPath else { throw ActionError.failed("Llasso lost track of the file.") }
+            let url = URL(fileURLWithPath: path)
+            var out = url.deletingPathExtension().appendingPathExtension("llasso").appendingPathExtension(url.pathExtension)
+            var n = 2
+            while FileManager.default.fileExists(atPath: out.path) {
+                out = url.deletingPathExtension().appendingPathExtension("llasso-\(n)").appendingPathExtension(url.pathExtension)
+                n += 1
+            }
+            try encode(png, as: url.pathExtension).write(to: out)
+            NSWorkspace.shared.activateFileViewerSelecting([out])
+            return "Saved \(out.lastPathComponent) beside the original."
+        case .pasteInto(let name):
+            try await paste(.png(resized(png, to: fit, points: points)), into: app)
+            return "Pasted the image into \(name)."
+        case .copy:
+            copy(.png(png))
+            return "Copied the image to the clipboard."
+        case .saveFile:
+            let url = try save(png, ext: "png")
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            return "Saved \(url.lastPathComponent) in Documents/Llasso."
+        default:
+            throw ActionError.failed("That destination doesn't take an image.")
+        }
+    }
+
+    /// Scale to `size` pixels, tagged as `points` so a Retina capture pastes at the size it was boxed.
+    static func resized(_ png: Data, to size: CGSize?, points: CGSize? = nil) -> Data {
+        guard let size, size.width > 0, size.height > 0,
+              let src = NSBitmapImageRep(data: png), src.pixelsWide != Int(size.width) || src.pixelsHigh != Int(size.height),
+              let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width), pixelsHigh: Int(size.height),
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                         colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+        else { return png }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        NSGraphicsContext.current?.imageInterpolation = .high
+        src.draw(in: CGRect(origin: .zero, size: size))
+        NSGraphicsContext.restoreGraphicsState()
+        if let points { rep.size = points }
+        return rep.representation(using: .png, properties: [:]) ?? png
+    }
+
+    static func encode(_ png: Data, as ext: String) throws -> Data {
+        let type: NSBitmapImageRep.FileType
+        switch ext.lowercased() {
+        case "jpg", "jpeg": type = .jpeg
+        case "tif", "tiff": type = .tiff
+        case "gif": type = .gif
+        case "bmp": type = .bmp
+        default: return png
+        }
+        guard let rep = NSBitmapImageRep(data: png), let out = rep.representation(using: type, properties: [:]) else {
+            throw ActionError.failed("Llasso couldn't convert the image to .\(ext).")
+        }
+        return out
+    }
+
+    // MARK: Spreadsheets
+
+    static func cells(start: String?, rows: [[String]], to d: Destination, context c: ScreenContext,
+                      app: NSRunningApplication?) async throws -> String {
+        let tsv = rows.map { $0.joined(separator: "\t") }.joined(separator: "\n")
+        switch d {
+        case .writeCells:
+            guard let sheet = c.sheet else { throw ActionError.failed("Llasso lost the spreadsheet selection.") }
+            let origin = start ?? CellRef.topLeft(of: sheet.address)
+            guard let o = CellRef.parse(origin) else { throw ActionError.failed("\(origin) isn't a cell address.") }
+            try Sheets.write(rows, at: o, in: sheet.app)
+            let end = CellRef.name(col: o.col + max(0, (rows.map(\.count).max() ?? 1) - 1), row: o.row + rows.count - 1)
+            return "Wrote \(origin)\(end == origin ? "" : ":" + end)."
+        case .pasteInto(let name):
+            try await paste(.string(tsv), into: app)
+            return "Pasted the cells into \(name)."
+        case .copy:
+            copy(.string(tsv))
+            return "Copied as a table; paste it into any spreadsheet."
+        default:
+            throw ActionError.failed("That destination doesn't take cells.")
+        }
+    }
+
+    // MARK: Scripts
+
+    static func run(script: String) async throws -> String {
+        let out = try await Shell.osascript(script)
+        return out.isEmpty ? "The script ran." : "The script ran and returned: \(out.prefix(500))"
+    }
+
+    // MARK: Shared
+
+    enum Clip { case string(String), png(Data) }
+
+    static func copy(_ clip: Clip) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        switch clip {
+        case .string(let s): pb.setString(s, forType: .string)
+        case .png(let d): pb.setData(d, forType: .png)
+            if let rep = NSBitmapImageRep(data: d), let tiff = rep.tiffRepresentation { pb.setData(tiff, forType: .tiff) }
+        }
+    }
+
+    /// Put the clip on the clipboard, bring the app forward, press ⌘V, then put back what
+    /// the clipboard held before.
+    static func paste(_ clip: Clip, into app: NSRunningApplication?) async throws {
+        guard AXIsProcessTrusted() else { throw ActionError.failed("Pasting needs Accessibility permission. Allow it in Llasso's settings.") }
+        let pb = NSPasteboard.general
+        let saved = pb.pasteboardItems?.map { item -> NSPasteboardItem in
+            let copy = NSPasteboardItem()
+            for t in item.types { if let d = item.data(forType: t) { copy.setData(d, forType: t) } }
+            return copy
+        } ?? []
+        copy(clip)
+        app?.activate()
+        try await Task.sleep(nanoseconds: 250_000_000)
+        let src = CGEventSource(stateID: .combinedSessionState)
+        let v: CGKeyCode = 9
+        let down = CGEvent(keyboardEventSource: src, virtualKey: v, keyDown: true)
+        let up = CGEvent(keyboardEventSource: src, virtualKey: v, keyDown: false)
+        down?.flags = .maskCommand
+        up?.flags = .maskCommand
+        down?.post(tap: .cghidEventTap)
+        up?.post(tap: .cghidEventTap)
+        try await Task.sleep(nanoseconds: 600_000_000)
+        pb.clearContents()
+        if !saved.isEmpty { pb.writeObjects(saved) }
+    }
+
+    static func newDocument(_ text: String) throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Llasso \(stamp()).txt")
+        try Data(text.utf8).write(to: url)
+        let config = NSWorkspace.OpenConfiguration()
+        guard let textEdit = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.TextEdit") else {
+            NSWorkspace.shared.open(url); return
+        }
+        NSWorkspace.shared.open([url], withApplicationAt: textEdit, configuration: config)
+    }
+
+    static func save(_ data: Data, ext: String) throws -> URL {
+        try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+        let url = outputFolder.appendingPathComponent("Llasso \(stamp()).\(ext)")
+        try data.write(to: url)
+        return url
+    }
+
+    static func stamp() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH.mm.ss"
+        return f.string(from: Date())
+    }
+}
+
+/// Reads and writes spreadsheet selections in Numbers and Excel through AppleScript.
+enum Sheets {
+    static func app(for bundleID: String?) -> SheetSelection.App? {
+        switch bundleID {
+        case "com.apple.iWork.Numbers": return .numbers
+        case "com.microsoft.Excel": return .excel
+        default: return nil
+        }
+    }
+
+    /// The selection's address and values, rows separated by newlines and cells by tabs.
+    static func read(_ app: SheetSelection.App) -> SheetSelection? {
+        let script: String
+        switch app {
+        case .excel:
+            // Inside an app's tell block `tab` can resolve to the app's own term; use a character id.
+            script = """
+            set TB to character id 9
+            tell application "Microsoft Excel"
+                set r to selection
+                set addr to get address r row absolute false column absolute false
+                set v to value of r
+                set out to addr & linefeed
+                if class of v is list then
+                    repeat with rowv in v
+                        set ln to ""
+                        if class of rowv is list then
+                            repeat with c in rowv
+                                set ln to ln & (c as text) & TB
+                            end repeat
+                        else
+                            set ln to (rowv as text) & TB
+                        end if
+                        set out to out & ln & linefeed
+                    end repeat
+                else
+                    set out to out & (v as text) & linefeed
+                end if
+                return out
+            end tell
+            """
+        case .numbers:
+            script = """
+            set TB to character id 9
+            tell application "Numbers"
+                tell front document's active sheet
+                    set t to first table whose selection range is not missing value
+                    set sr to selection range of t
+                    set addr to name of sr
+                    set out to addr & linefeed
+                    repeat with rw in rows of sr
+                        set ln to ""
+                        repeat with c in cells of rw
+                            set v to value of c
+                            if v is missing value then set v to ""
+                            set ln to ln & (v as text) & TB
+                        end repeat
+                        set out to out & ln & linefeed
+                    end repeat
+                    return out
+                end tell
+            end tell
+            """
+        }
+        guard let out = try? Shell.osascriptSync(script, timeout: 3) else { return nil }
+        var lines = out.components(separatedBy: "\n")
+        guard !lines.isEmpty else { return nil }
+        let address = lines.removeFirst().replacingOccurrences(of: "$", with: "")
+        let values = lines.filter { !$0.isEmpty }.map { line in
+            line.hasSuffix("\t") ? String(line.dropLast()).components(separatedBy: "\t") : line.components(separatedBy: "\t")
+        }
+        return SheetSelection(app: app, address: address, values: values)
+    }
+
+    static func write(_ rows: [[String]], at origin: (col: Int, row: Int), in app: SheetSelection.App) throws {
+        func quoted(_ s: String) -> String {
+            "\"" + s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+        }
+        var body = ""
+        for (r, row) in rows.enumerated() {
+            for (c, value) in row.enumerated() {
+                let ref = CellRef.name(col: origin.col + c, row: origin.row + r)
+                switch app {
+                case .excel:
+                    let prop = value.hasPrefix("=") ? "formula" : "value"
+                    body += "set \(prop) of range \(quoted(ref)) of active sheet to \(quoted(value))\n"
+                case .numbers:
+                    body += "set value of cell \(quoted(ref)) of t to \(quoted(value))\n"
+                }
+            }
+        }
+        let script: String
+        switch app {
+        case .excel:
+            script = "tell application \"Microsoft Excel\"\n\(body)end tell"
+        case .numbers:
+            script = """
+            tell application "Numbers"
+                tell front document's active sheet
+                    set t to first table whose selection range is not missing value
+            \(body)
+                end tell
+            end tell
+            """
+        }
+        _ = try Shell.osascriptSync(script, timeout: 20)
+    }
+}
+
+/// Runs osascript off the main thread so a slow app can't freeze Llasso.
+enum Shell {
+    static func osascriptSync(_ script: String, timeout: TimeInterval) throws -> String {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        p.arguments = ["-e", script]
+        let out = Pipe(), err = Pipe()
+        p.standardOutput = out
+        p.standardError = err
+        try p.run()
+        let deadline = Date().addingTimeInterval(timeout)
+        while p.isRunning && Date() < deadline { usleep(20_000) }
+        if p.isRunning { p.terminate(); throw ActionError.failed("The app took too long to answer the script.") }
+        let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        if p.terminationStatus != 0 {
+            let e = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            throw ActionError.failed("The script failed: " + e.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return text.trimmingCharacters(in: .newlines)
+    }
+
+    static func osascript(_ script: String, timeout: TimeInterval = 60) async throws -> String {
+        try await Task.detached { try osascriptSync(script, timeout: timeout) }.value
+    }
+}
+
+/// An amber ring with a label, shown where the model points.
+@MainActor
+enum Pointer {
+    private static var panels: [NSPanel] = []
+
+    static func ring(at point: CGPoint, label: String, seconds: Double = 6) {
+        let size = CGSize(width: 64, height: 64)
+        let ring = NSPanel(contentRect: CGRect(origin: .zero, size: CGSize(width: 320, height: size.height)),
+                           styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        ring.isOpaque = false
+        ring.backgroundColor = .clear
+        ring.hasShadow = false
+        ring.ignoresMouseEvents = true
+        ring.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 3)
+        ring.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        let view = RingView(frame: CGRect(origin: .zero, size: ring.frame.size))
+        view.label = label
+        ring.contentView = view
+        ring.setFrameOrigin(CGPoint(x: point.x - size.width / 2, y: point.y - size.height / 2))
+        ring.orderFrontRegardless()
+        panels.append(ring)
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+            ring.orderOut(nil)
+            panels.removeAll { $0 === ring }
+        }
+    }
+
+    static func clear() {
+        panels.forEach { $0.orderOut(nil) }
+        panels = []
+    }
+
+    private final class RingView: NSView {
+        var label = ""
+        override func draw(_ dirtyRect: NSRect) {
+            let r = CGRect(x: 6, y: 6, width: 52, height: 52)
+            Palette.amber.setStroke()
+            let path = NSBezierPath(ovalIn: r)
+            path.lineWidth = 4
+            path.stroke()
+            let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+                                                        .foregroundColor: Palette.ink]
+            let text = NSAttributedString(string: label, attributes: attrs)
+            let w = min(240, text.size().width + 20)
+            let pill = CGRect(x: 66, y: 20, width: w, height: 24)
+            Palette.amber.setFill()
+            NSBezierPath(roundedRect: pill, xRadius: 12, yRadius: 12).fill()
+            text.draw(in: pill.insetBy(dx: 10, dy: 4))
+        }
+    }
+}
