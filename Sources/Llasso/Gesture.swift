@@ -200,6 +200,7 @@ final class Offer {
     }
 
     var isShowing: Bool { icon != nil }
+    var isOpened: Bool { icon != nil && opened }
     var window: NSWindow? { icon }
 
     func setRecording(_ on: Bool) { iconView?.recording = on }

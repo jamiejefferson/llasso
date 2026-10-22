@@ -51,7 +51,14 @@ final class Controller {
     /// The code edit on the card, kept so Undo can put the files back.
     private var codeEdit: (checkpoint: Checkpoint, before: String, after: String, files: [FileChange])?
 
+    private var watchdog: Timer?
+
     private init() {
+        // Every two seconds, put Llasso right if a job has lost all its windows, or the
+        // icon is left open with no job behind it. Either leaves new drags ignored.
+        watchdog = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkStuck() }
+        }
         pill.onSend = { [weak self] in self?.send() }
         pill.onCancel = { [weak self] in self?.cancel() }
         pill.onHold = { [weak self] down in
@@ -82,6 +89,17 @@ final class Controller {
                 self.pill.pending = nil
             }
         }
+    }
+
+    private func checkStuck() {
+        if NSApp.modalWindow != nil { return }
+        if phase == .idle {
+            if offer?.isOpened == true { Log.write("watchdog: open icon with no job; dismissed"); offer?.dismiss() }
+            return
+        }
+        let visible = (pillPanel?.isVisible ?? false) || (cardPanel?.isVisible ?? false)
+            || overlays.contains { $0.isVisible } || (offer?.isShowing ?? false)
+        if !visible { Log.write("watchdog: phase \(phase) with no windows; reset"); cancel() }
     }
 
     // MARK: Start
@@ -148,6 +166,7 @@ final class Controller {
             return
         }
         frontApp = front
+        Log.write("begin in \(front?.localizedName ?? "?")")
         phase = .selecting
         pill.text = ""
         pill.typed = false
@@ -200,6 +219,8 @@ final class Controller {
             guard let self else { return event }
             let window = event.window
             if window === self.pillPanel || window === self.cardPanel || window === self.offer?.window { return event }
+            // A save panel or alert Llasso opened is part of the job, not a click away from it.
+            if NSApp.modalWindow != nil || window is NSSavePanel { return event }
             return self.clicked(at: NSEvent.mouseLocation) ? nil : event
         }) { clickMonitors.append(local) }
     }
@@ -368,6 +389,17 @@ final class Controller {
             }
             capture = cap
             if let task = mcpTask { mcp = await task.value }
+            // "Do this in Paper" from another app: connect the app the user named.
+            if mcp == nil, let named = Integrations.shared.named(in: prompt) {
+                card.working = "Connecting to \(named.name)…"
+                if let client = await Integrations.shared.client(for: named) {
+                    integration = named
+                    mcp = client
+                    context.integration = named.name
+                }
+                card.working = nil
+            }
+            Log.write("send: \(prompt.prefix(80)) · \(context.kind.rawValue) · tools: \(mcp?.name ?? "none")")
             var guides: [String] = []
             if let mcp, let text = mcp.instructions, !text.isEmpty {
                 guides.append("Guide from \(mcp.name) for its own tools (prefixed \(mcp.name)__):\n" + text)
@@ -440,6 +472,7 @@ final class Controller {
                 var stop = false
                 for call in calls {
                     if Task.isCancelled { return }
+                    Log.write("tool: \(call.name)")
                     let outcome = await handle(call)
                     messages.append(.toolResult(id: call.id, outcome.text))
                     images += outcome.images
@@ -454,6 +487,10 @@ final class Controller {
             }
             card.working = nil
             card.state = .done
+            if shown.isEmpty && card.proposal == nil && card.question == nil && card.log.isEmpty && card.error == nil {
+                card.error = "The model sent nothing back. Try again, or say what you want in more words."
+            }
+            Log.write("done: \(shown.count) chars, proposal \(card.proposal != nil), log \(card.log)")
             History.append(prompt: lastPrompt, verb: pill.verb, context: context, answer: shown, model: model, actions: actions)
         } catch {
             if Task.isCancelled { return }
@@ -725,6 +762,7 @@ final class Controller {
     }
 
     private func fail(_ message: String) {
+        Log.write("failed: " + message)
         card.state = .failed
         card.error = message
     }
@@ -752,6 +790,7 @@ final class Controller {
     func cancel() { cancel(keepingOffer: false) }
 
     private func cancel(keepingOffer: Bool) {
+        if phase != .idle { Log.write("cancel from \(phase)") }
         holding = false
         decide(nil)
         if !keepingOffer { offer?.dismiss() }

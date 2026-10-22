@@ -364,6 +364,14 @@ final class Integrations: ObservableObject {
         all.first { $0.matches(bundleID: bundleID, appName: appName) }
     }
 
+    /// An app with its own server that the user named in the request ("do this in Paper").
+    func named(in prompt: String) -> Integration? {
+        all.first { i in
+            i.transport != nil && prompt.range(of: "\\b\(NSRegularExpression.escapedPattern(for: i.name))\\b",
+                                               options: [.regularExpression, .caseInsensitive]) != nil
+        }
+    }
+
     /// The running client for this app, started on first use. Nil when the app has none.
     func client(for i: Integration) async -> MCPClient? {
         if let c = clients[i.name], c.isRunning { return c }

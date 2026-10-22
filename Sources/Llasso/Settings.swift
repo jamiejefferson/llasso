@@ -104,6 +104,20 @@ enum Keychain {
 }
 
 /// One line of JSON per job, kept locally. Images are not stored.
+/// A plain event log for working out what happened when Llasso misbehaves.
+enum Log {
+    static func write(_ line: String) {
+        let url = History.folder.appendingPathComponent("llasso.log")
+        try? FileManager.default.createDirectory(at: History.folder, withIntermediateDirectories: true)
+        let text = ISO8601DateFormatter().string(from: Date()) + " " + line + "\n"
+        if let h = try? FileHandle(forWritingTo: url) {
+            h.seekToEndOfFile(); h.write(Data(text.utf8)); try? h.close()
+        } else {
+            try? Data(text.utf8).write(to: url)
+        }
+    }
+}
+
 enum History {
     static var folder: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

@@ -94,6 +94,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--acttest") {
             Task { @MainActor in await SelfTest.act(); NSApp.terminate(nil) }
         }
+        if CommandLine.arguments.contains("--namedtest") {
+            Task { @MainActor in await SelfTest.named(); NSApp.terminate(nil) }
+        }
         if CommandLine.arguments.contains("--savetest") {
             Task { @MainActor in SelfTest.save(); NSApp.terminate(nil) }
         }
@@ -524,6 +527,39 @@ enum SelfTest {
         try? fm.createDirectory(at: History.folder, withIntermediateDirectories: true)
         if let data = try? JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: History.folder.appendingPathComponent("codetest.json"))
+        }
+    }
+
+    /// A Chrome box with "do this in Paper": Paper's server connects and the model's first
+    /// call is one of Paper's tools. Nothing is written. Writes namedtest.json.
+    static func named() async {
+        var r: [String: Any] = [:]
+        let prompt = "can you do three variations on the design of this in paper please"
+        let i = Integrations.shared.named(in: prompt)
+        r["named"] = i?.name ?? "none"
+        r["notNamed"] = Integrations.shared.named(in: "make the paperwork shorter")?.name ?? "none"
+        if let i, let mcp = await Integrations.shared.client(for: i) {
+            var ctx = ScreenContext(appName: "Google Chrome", bundleID: "com.google.Chrome", url: "https://example.com/care")
+            ctx.roles = ["AXStaticText", "AXImage"]
+            ctx.integration = i.name
+            let crop = (try? Capture.png(buttonImage())) ?? Data()
+            var guides: [String] = []
+            if let text = mcp.instructions { guides.append("Guide from \(mcp.name) for its own tools (prefixed \(mcp.name)__):\n" + text) }
+            var calls: [ToolCall] = []
+            do {
+                for try await chunk in Settings.shared.client.streamTurn(
+                    model: Settings.shared.model,
+                    messages: Brief.firstMessages(prompt: prompt, verb: nil, context: ctx, crop: crop, screen: nil,
+                                                  spoken: false, appGuides: guides),
+                    tools: BuiltinTool.available(for: ctx.kind).map(\.schema) + Integrations.shared.toolSchemas(mcp, blocked: i.blocked)) {
+                    if case .tools(let c) = chunk { calls = c }
+                }
+            } catch { r["error"] = error.localizedDescription }
+            r["firstCalls"] = calls.map(\.name)
+        }
+        Integrations.shared.stopAll()
+        if let data = try? JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: History.folder.appendingPathComponent("namedtest.json"))
         }
     }
 
