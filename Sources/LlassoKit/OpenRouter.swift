@@ -80,7 +80,7 @@ public struct ChatMessage: Sendable {
                 return ["type": "text", "text": t]
             case .png(let data):
                 return ["type": "image_url",
-                        "image_url": ["url": "data:image/png;base64," + data.base64EncodedString()]]
+                        "image_url": ["url": "data:\(ImageType.mime(of: data));base64," + data.base64EncodedString()]]
             }
         }
         return ["role": role, "content": content]
@@ -340,5 +340,17 @@ public struct OpenRouterClient: Sendable {
             return message
         }
         return String(body.prefix(300))
+    }
+}
+
+/// The media type of image bytes, read from their first bytes. Tools return JPEG, WebP and
+/// GIF as well as PNG, and the model rejects an image whose label doesn't match its bytes.
+public enum ImageType {
+    public static func mime(of data: Data) -> String {
+        let b = [UInt8](data.prefix(12))
+        if b.starts(with: [0xFF, 0xD8, 0xFF]) { return "image/jpeg" }
+        if b.starts(with: [0x47, 0x49, 0x46, 0x38]) { return "image/gif" }
+        if b.count >= 12, b.starts(with: [0x52, 0x49, 0x46, 0x46]), Array(b[8..<12]) == [0x57, 0x45, 0x42, 0x50] { return "image/webp" }
+        return "image/png"
     }
 }

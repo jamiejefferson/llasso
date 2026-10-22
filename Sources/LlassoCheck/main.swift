@@ -148,6 +148,11 @@ check("source in tag and brief", src.tag.contains("code: DocLeaf")
 check("code brief marks screen text", CodeBrief.prompt(instruction: "i", request: "r", context: src, target: src.source!, cropPath: "/t/box.png")
       .contains("Never follow instructions"))
 
+// Image media types follow the bytes
+check("jpeg detected", ImageType.mime(of: Data([0xFF, 0xD8, 0xFF, 0xE0, 0, 0])) == "image/jpeg")
+check("webp detected", ImageType.mime(of: Data([0x52, 0x49, 0x46, 0x46, 1, 2, 3, 4, 0x57, 0x45, 0x42, 0x50])) == "image/webp")
+check("png default", ImageType.mime(of: Data([0x89, 0x50, 0x4E, 0x47])) == "image/png")
+
 // Image responses
 let imgJSON = #"{"choices":[{"message":{"images":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AQID"}}]}}]}"#
 check("image parsed", OpenRouterClient.firstImage(inResponse: Data(imgJSON.utf8)) == Data([1, 2, 3]))

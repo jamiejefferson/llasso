@@ -39,15 +39,22 @@ final class Settings: ObservableObject {
         hasKey = !apiKey.isEmpty
     }
 
-    /// Keychain first; the environment variable is a developer fallback.
+    /// Read from the Keychain once per launch and kept in memory, so the Keychain is asked
+    /// once, not on every request. The environment variable is a developer fallback.
+    private var cachedKey: String?
+
     var apiKey: String {
-        Keychain.read(service: "llasso-openrouter", account: "default")
+        if let cachedKey { return cachedKey }
+        let key = Keychain.read(service: "llasso-openrouter", account: "default")
             ?? ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"]
             ?? ""
+        cachedKey = key
+        return key
     }
 
     func saveKey(_ key: String) {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        cachedKey = nil
         if trimmed.isEmpty {
             Keychain.delete(service: "llasso-openrouter", account: "default")
         } else {
@@ -59,8 +66,39 @@ final class Settings: ObservableObject {
     var client: OpenRouterClient { OpenRouterClient(apiKey: apiKey) }
 }
 
+/// The key lives in the login keychain. Llasso is signed with a local certificate and has no
+/// Team ID, so the Keychain ties each item to the exact build that wrote or last read it,
+/// and every rebuild would ask for the login password again. Going through Apple's own
+/// `security` tool, which the item lists as allowed, avoids that prompt and is no wider
+/// than the access the item already grants that tool.
 enum Keychain {
+    static let tool = "/usr/bin/security"
+
     static func read(service: String, account: String) -> String? {
+        if let r = try? Proc.run(tool, ["find-generic-password", "-s", service, "-a", account, "-w"], timeout: 10),
+           r.status == 0 {
+            let s = r.out.trimmingCharacters(in: .whitespacesAndNewlines)
+            return s.isEmpty ? nil : s
+        }
+        return readDirect(service: service, account: account)
+    }
+
+    /// Write through the `security` tool, listing both the tool and this app as allowed.
+    /// The value goes in on standard input, never on a command line other processes can see.
+    @discardableResult
+    static func save(_ value: String, service: String, account: String) -> Bool {
+        let safe = value.allSatisfy { $0.isLetter || $0.isNumber || "-_.".contains($0) }
+            && service.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" }
+        guard safe else { return saveDirect(value, service: service, account: account) }
+        let app = Bundle.main.bundlePath
+        let command = "add-generic-password -U -s \(service) -a \(account) -w \"\(value)\" -T \(tool) -T \"\(app)\"\n"
+        guard let r = try? Proc.run(tool, ["-i"], stdin: Data(command.utf8), timeout: 10), r.status == 0,
+              read(service: service, account: account) == value
+        else { return saveDirect(value, service: service, account: account) }
+        return true
+    }
+
+    static func readDirect(service: String, account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -76,7 +114,7 @@ enum Keychain {
     }
 
     @discardableResult
-    static func save(_ value: String, service: String, account: String) -> Bool {
+    static func saveDirect(_ value: String, service: String, account: String) -> Bool {
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
