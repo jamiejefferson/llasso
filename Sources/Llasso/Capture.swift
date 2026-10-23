@@ -90,6 +90,7 @@ enum ContextReader {
         guard let app, AXIsProcessTrusted() else { return ctx }
         let appEl = AXUIElementCreateApplication(app.processIdentifier)
         AXUIElementSetMessagingTimeout(appEl, 0.25)
+        wake(appEl, pid: app.processIdentifier)
 
         if let window: AXUIElement = attr(appEl, kAXFocusedWindowAttribute) {
             ctx.windowTitle = attr(window, kAXTitleAttribute)
@@ -129,6 +130,19 @@ enum ContextReader {
             }
         }
         return ctx
+    }
+
+    private static var woken = Set<pid_t>()
+
+    /// Chrome and Electron apps expose their pages to Accessibility only once asked, so without
+    /// this Llasso sees a browser as one flat image and can't find the selection to replace.
+    /// The first time, give the app a moment to build its tree.
+    static func wake(_ appEl: AXUIElement, pid: pid_t) {
+        guard !woken.contains(pid) else { return }
+        woken.insert(pid)
+        let a = AXUIElementSetAttributeValue(appEl, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        let b = AXUIElementSetAttributeValue(appEl, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        if a == .success || b == .success { Thread.sleep(forTimeInterval: 0.3) }
     }
 
     static func settable(_ el: AXUIElement, _ name: String) -> Bool {

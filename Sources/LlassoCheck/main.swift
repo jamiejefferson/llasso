@@ -206,5 +206,8 @@ if let key = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"], !key.isE
     print("SKIP live call (no OPENROUTER_API_KEY)")
 }
 
+let blank = ScreenContext(appName: "Figma", bundleID: "com.figma.Desktop", windowTitle: " \u{200B} ")
+check("blank window title leaves no empty tag part", blank.tag == "Figma")
+
 print(failures == 0 ? "All checks passed." : "\(failures) check(s) failed.")
 exit(Int32(failures))

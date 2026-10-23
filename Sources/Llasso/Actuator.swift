@@ -16,6 +16,7 @@ enum Destination: Hashable {
     case keepCode
     case undoCode
     case openCode(name: String)
+    case undoText(app: String)
 
     var label: String {
         switch self {
@@ -30,6 +31,7 @@ enum Destination: Hashable {
         case .keepCode: return "Keep"
         case .undoCode: return "Undo"
         case .openCode(let name): return "Open \(name)"
+        case .undoText: return "Undo"
         }
     }
 }
@@ -54,7 +56,7 @@ enum Actuator {
         switch p {
         case .text:
             var d: [Destination] = []
-            if c.canReplaceText || c.canSetField { d.append(.replaceInPlace(app: app)) }
+            if c.canReplaceText || c.canSetField || c.mayHoldSelection { d.append(.replaceInPlace(app: app)) }
             d += [.copy, .newDocument, .saveAs]
             return d
         case .image:
@@ -96,6 +98,11 @@ enum Actuator {
         case .copy:
             copy(.string(text))
             return "Copied to the clipboard."
+        case .undoText(let name):
+            guard let app else { throw ActionError.failed("The app has closed.") }
+            try await bringForward(app)
+            try press(6, command: true, to: app)   // ⌘Z
+            return "Undone in \(name)."
         case .newDocument:
             try newDocument(text)
             return "Opened a new TextEdit document with the text."
@@ -112,8 +119,7 @@ enum Actuator {
     static func replaceText(_ text: String, context c: ScreenContext, app: NSRunningApplication?,
                             allowPaste: Bool = true) async throws {
         guard let app else { throw ActionError.failed("The app has closed.") }
-        app.activate()
-        try await Task.sleep(nanoseconds: 200_000_000)
+        try await bringForward(app)
         let appEl = AXUIElementCreateApplication(app.processIdentifier)
         guard let focused: AXUIElement = ContextReader.attr(appEl, kAXFocusedUIElementAttribute) else {
             throw ActionError.failed("\(c.appName ?? "The app") has no text field in focus any more. Click back into it and try again.")
@@ -133,7 +139,77 @@ enum Actuator {
             }
             return
         }
-        throw ActionError.failed("Llasso can't put text back in this app. Copy it instead.")
+        // A browser or Electron page Accessibility can't see into: paste over the selection,
+        // but only after ⌘C proves there is one, so nothing lands at a stray caret.
+        guard allowPaste, c.mayHoldSelection else {
+            throw ActionError.failed("Llasso can't put text back in this app. Copy it instead.")
+        }
+        guard await hasSelection(in: app) else {
+            throw ActionError.failed("Nothing is selected in \(c.appName ?? "the app"). Select the text, then tap Replace.")
+        }
+        try await paste(.string(text), into: app)
+    }
+
+    /// Whether the app has a selection: ⌘C changes the clipboard only when something is selected.
+    /// The clipboard is put back afterwards.
+    static func hasSelection(in app: NSRunningApplication) async -> Bool {
+        let pb = NSPasteboard.general
+        let saved = pb.pasteboardItems?.map { item -> NSPasteboardItem in
+            let copy = NSPasteboardItem()
+            for t in item.types { if let d = item.data(forType: t) { copy.setData(d, forType: t) } }
+            return copy
+        } ?? []
+        let before = pb.changeCount
+        guard (try? await bringForward(app)) != nil else { return false }
+        guard (try? press(8, command: true, to: app)) != nil else { return false }   // ⌘C
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        let found = pb.changeCount != before && !(pb.string(forType: .string) ?? "").isEmpty
+        if pb.changeCount != before {
+            pb.clearContents()
+            if !saved.isEmpty { pb.writeObjects(saved) }
+        }
+        return found
+    }
+
+    /// Bring the boxed app to the front and wait until it is, because a keystroke sent before
+    /// then lands in whichever app is in front. Throws rather than type into the wrong app.
+    static func bringForward(_ app: NSRunningApplication) async throws {
+        if #available(macOS 14.0, *) { NSApp.yieldActivation(to: app) }
+        app.activate(options: [.activateAllWindows])
+        for _ in 0..<20 {
+            if isFront(app) {
+                try await Task.sleep(nanoseconds: 150_000_000)
+                return
+            }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        throw ActionError.failed("\(app.localizedName ?? "The app") wouldn't come to the front, so Llasso typed nothing.")
+    }
+
+    /// Whether `app` has keyboard focus right now. Accessibility answers live; NSWorkspace's
+    /// frontmost app can lag a focus change by a beat.
+    static func isFront(_ app: NSRunningApplication) -> Bool {
+        let system = AXUIElementCreateSystemWide()
+        guard let focused: AXUIElement = ContextReader.attr(system, kAXFocusedApplicationAttribute) else { return false }
+        var pid: pid_t = 0
+        return AXUIElementGetPid(focused, &pid) == .success && pid == app.processIdentifier
+    }
+
+    /// Send a keystroke to `app`, refusing if another app has taken the front since.
+    static func press(_ key: CGKeyCode, command: Bool, to app: NSRunningApplication) throws {
+        guard isFront(app) else {
+            throw ActionError.failed("\(app.localizedName ?? "The app") lost the front before Llasso could type, so nothing was typed.")
+        }
+        press(key, command: command)
+    }
+
+    static func press(_ key: CGKeyCode, command: Bool) {
+        let src = CGEventSource(stateID: .combinedSessionState)
+        let down = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: true)
+        let up = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: false)
+        if command { down?.flags = .maskCommand; up?.flags = .maskCommand }
+        down?.post(tap: .cghidEventTap)
+        up?.post(tap: .cghidEventTap)
     }
 
     // MARK: Images
@@ -258,17 +334,11 @@ enum Actuator {
             for t in item.types { if let d = item.data(forType: t) { copy.setData(d, forType: t) } }
             return copy
         } ?? []
+        guard let app else { throw ActionError.failed("The app has closed.") }
+        try await bringForward(app)
         copy(clip)
-        app?.activate()
-        try await Task.sleep(nanoseconds: 250_000_000)
-        let src = CGEventSource(stateID: .combinedSessionState)
-        let v: CGKeyCode = 9
-        let down = CGEvent(keyboardEventSource: src, virtualKey: v, keyDown: true)
-        let up = CGEvent(keyboardEventSource: src, virtualKey: v, keyDown: false)
-        down?.flags = .maskCommand
-        up?.flags = .maskCommand
-        down?.post(tap: .cghidEventTap)
-        up?.post(tap: .cghidEventTap)
+        do { try press(9, command: true, to: app) }   // ⌘V
+        catch { pb.clearContents(); if !saved.isEmpty { pb.writeObjects(saved) }; throw error }
         try await Task.sleep(nanoseconds: 600_000_000)
         pb.clearContents()
         if !saved.isEmpty { pb.writeObjects(saved) }

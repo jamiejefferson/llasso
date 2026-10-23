@@ -339,6 +339,26 @@ final class Job {
             cardP.script = source
         }
         card.proposal = cardP
+        // Text that can go back where it came from goes straight back; the card offers Undo.
+        if case .text(let text, _) = p, let place = cardP.destinations.first(where: { if case .replaceInPlace = $0 { return true }; return false }) {
+            card.working = "Putting it back…"
+            do {
+                let result = try await Actuator.text(text, to: place, context: context, app: frontApp)
+                card.working = nil
+                card.proposal?.done = result
+                card.proposal?.destinations = [.undoText(app: context.appName ?? "the app"), .copy]
+                actions.append(place.label + " (automatic)")
+                outline?.orderOut(nil)
+                History.append(prompt: lastPrompt, verb: verb, context: context, answer: card.answer,
+                               model: Settings.shared.model, actions: actions)
+                return Outcome(text: "\(result) The user can undo it from the card. Do not repeat the text.", endsTurn: true)
+            } catch {
+                // Couldn't put it back (nothing selected, app refused): leave the choice to the user.
+                card.working = nil
+                card.proposal?.destinations.removeAll { $0 == place }
+                card.proposal?.note = error.localizedDescription
+            }
+        }
         return Outcome(text: "Shown to the user, who will choose where it goes. Do not repeat it.", endsTurn: true)
     }
 
@@ -456,6 +476,7 @@ final class Job {
                 }
                 card.working = nil
                 card.proposal?.done = result
+                if case .undoText = d { card.proposal?.destinations = [.copy] }
                 actions.append(d.label)
                 messages.append(.user("(Llasso note, not from the user) The user chose “\(d.label)”. \(result)"))
                 History.append(prompt: lastPrompt, verb: verb, context: ctx, answer: card.answer,

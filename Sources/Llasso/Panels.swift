@@ -272,6 +272,8 @@ struct ProposalCard {
     var destinations: [Destination]
     /// Set once a destination has been used: what happened.
     var done: String?
+    /// Why an automatic step didn't happen, shown quietly above the chips.
+    var note: String?
 }
 
 struct CardView: View {
@@ -456,6 +458,9 @@ struct CardView: View {
             }
             if let done = p.done {
                 Text("✓ " + done).font(.system(size: 13)).foregroundColor(.llPositive)
+            }
+            if let note = p.note, p.done == nil {
+                Text(note).font(.system(size: 12)).foregroundColor(.llSub)
             }
             FlowRow(items: p.destinations) { d in
                 chip(d.label, primary: d == p.destinations.first && p.done == nil) { model.onDestination?(d) }

@@ -456,7 +456,9 @@ private final class OfferIcon: NSView {
         let swell: CGFloat = hovering && !opened ? 1.15 : 1
         body.transform = CATransform3DMakeScale(swell, swell, 1)
         discLayer.opacity = opened ? 0 : 1
-        markFill.opacity = 1
+        // Opened, the prompt's mic draws the mark, so the icon's own copy hides to avoid a double image.
+        markFill.opacity = opened ? 0 : 1
+        markDots.opacity = opened ? 0 : markDots.opacity
         discLayer.shadowColor = lit ? Palette.gold.cgColor : NSColor.black.cgColor
         discLayer.shadowRadius = lit ? 9 : (dark ? 0 : 5)
         discLayer.shadowOpacity = lit ? 0.6 : (dark ? 0 : 0.14)

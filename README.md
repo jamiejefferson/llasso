@@ -31,6 +31,7 @@ First run: paste an OpenRouter key in Settings, then allow Screen Recording, Mic
     open ~/Applications/Llasso.app --args --codetest       # a scratch repo served on localhost: resolve, edit_code,
                                                            # Claude Code edit, diff, Undo; writes codetest.json
     open ~/Applications/Llasso.app --args --jobtest        # two jobs at once, a click away mid-job; writes jobtest.json
+    open ~/Applications/Llasso.app --args --pastetest      # replaces a selection in a Chrome page by paste, then undoes it; writes pastetest.json
     open ~/Applications/Llasso.app --args --looktest       # the gold thread, icon, prompt and card on light and dark; writes look-*.png
     open ~/Applications/Llasso.app --args --savetest       # opens Save to… over the overlay and checks it sits on top
                                                            # and starts in the project; writes savetest.json

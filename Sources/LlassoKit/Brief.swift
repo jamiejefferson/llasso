@@ -27,6 +27,14 @@ public struct ScreenContext: Sendable, Equatable {
     public var canReplaceText = false
     /// The focused element is a plain text field whose whole value Llasso can set.
     public var canSetField = false
+
+    static let browserBundles: Set<String> = ["com.google.Chrome", "com.apple.Safari", "company.thebrowser.Browser",
+                                              "com.brave.Browser", "com.microsoft.edgemac", "org.mozilla.firefox"]
+    /// A browser or web view whose selection Accessibility may not report. Text can still go
+    /// back by pasting over the selection, once Llasso has checked there is one.
+    public var mayHoldSelection: Bool {
+        !canReplaceText && !canSetField && (url != nil || Self.browserBundles.contains(bundleID ?? ""))
+    }
     /// The spreadsheet selection, when the app is Numbers or Excel.
     public var sheet: SheetSelection?
     /// Name of the app's connected MCP server, when Llasso has one running for it.
@@ -63,6 +71,9 @@ public struct ScreenContext: Sendable, Equatable {
         }
         if let source, source.file == nil || documentPath == nil { bits.append("code: " + source.name) }
         if let integration { bits.append(integration + " connected") }
+        // Drop blank bits (an untitled window, an empty host) so the tag never shows "Figma ·  · …".
+        bits = bits.map { $0.trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters)) }
+            .filter { $0.unicodeScalars.contains { CharacterSet.alphanumerics.contains($0) } }
         return bits.isEmpty ? "Screen" : bits.joined(separator: " · ")
     }
 }
@@ -143,7 +154,8 @@ public enum Brief {
         } else if let v = context.fieldValue, !v.isEmpty {
             lines.append("- Text of the focused field: \(String(v.prefix(4000)))")
         }
-        lines.append("- Text can go back in place: " + (context.canReplaceText || context.canSetField ? "yes" : "no"))
+        lines.append("- Text can go back in place: " + (context.canReplaceText || context.canSetField ? "yes"
+                     : context.mayHoldSelection ? "yes, over whatever the user has selected" : "no"))
         if let sheet = context.sheet {
             lines.append("- Spreadsheet selection (\(sheet.app.rawValue)) \(sheet.address):")
             for row in sheet.values.prefix(60) { lines.append("  | " + row.joined(separator: " | ")) }

@@ -106,6 +106,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if CommandLine.arguments.contains("--acttest") {
             Task { @MainActor in await SelfTest.act(); NSApp.terminate(nil) }
         }
+        if CommandLine.arguments.contains("--pastetest") {
+            Task { @MainActor in await SelfTest.pasteOver(); NSApp.terminate(nil) }
+        }
         if CommandLine.arguments.contains("--looktest") {
             Task { @MainActor in await SelfTest.look(); NSApp.terminate(nil) }
         }
@@ -413,6 +416,60 @@ enum SelfTest {
     /// Opens a TextEdit document and an Excel workbook, runs a real model turn on the
     /// text and writes a formula into the sheet, then closes both without saving.
     /// Text goes back by Accessibility only, never by a synthetic paste.
+    /// Replace a selection in a Chrome page Accessibility is told nothing about (the Google Docs case):
+    /// ⌘C finds the selection, the paste lands over it, and Undo puts it back. The page copies its
+    /// text into its title so the result can be read from the window. Writes pastetest.json.
+    static func pasteOver() async {
+        var r: [String: Any] = [:]
+        let page = FileManager.default.temporaryDirectory.appendingPathComponent("llasso-pastetest.html")
+        try? Data("""
+        <!doctype html><title>start</title><body style="font:20px sans-serif;padding:40px">
+        <div id=e contenteditable>Avoid a rushed strategy in the agentic AI era</div>
+        <script>
+        const e = document.getElementById('e'); e.focus();
+        const r = document.createRange(); r.selectNodeContents(e);
+        getSelection().removeAllRanges(); getSelection().addRange(r);
+        const t = () => document.title = 'T:' + e.textContent; t();
+        new MutationObserver(t).observe(e, {subtree: true, characterData: true, childList: true});
+        </script>
+        """.utf8).write(to: page)
+        _ = try? await Shell.osascript("""
+        tell application "Google Chrome"
+            activate
+            make new window
+            set URL of active tab of front window to "\(page.absoluteString)"
+        end tell
+        """)
+        try? await Task.sleep(nanoseconds: 2_500_000_000)
+        guard let chrome = NSRunningApplication.runningApplications(withBundleIdentifier: "com.google.Chrome").first else {
+            r["error"] = "Chrome didn't start"; write(r, "pastetest.json"); return
+        }
+        func title() -> String {
+            let el = AXUIElementCreateApplication(chrome.processIdentifier)
+            guard let w: AXUIElement = ContextReader.attr(el, kAXFocusedWindowAttribute) else { return "" }
+            return (ContextReader.attr(w, kAXTitleAttribute) as String?) ?? ""
+        }
+        r["before"] = title()
+        // Pretend Accessibility saw nothing, as in Google Docs.
+        var ctx = ScreenContext(appName: "Google Chrome", bundleID: "com.google.Chrome")
+        ctx.url = page.absoluteString
+        r["offers replace"] = Actuator.destinations(for: .text(text: "x", summary: ""), context: ctx).contains(.replaceInPlace(app: "Google Chrome"))
+        do {
+            _ = try await Actuator.text("Éviter une stratégie bâclée", to: .replaceInPlace(app: "Google Chrome"), context: ctx, app: chrome)
+            for _ in 0..<20 where !title().hasPrefix("T:Év") { try await Task.sleep(nanoseconds: 100_000_000) }
+            r["after"] = title()
+            _ = try await Actuator.text("", to: .undoText(app: "Google Chrome"), context: ctx, app: chrome)
+            try await Task.sleep(nanoseconds: 500_000_000)
+            r["undone"] = title()
+            // Nothing selected now? Click away first by collapsing the selection with an arrow key.
+            Actuator.press(124, command: false)
+            try await Task.sleep(nanoseconds: 300_000_000)
+            r["selection after collapse"] = await Actuator.hasSelection(in: chrome)
+        } catch { r["error"] = error.localizedDescription }
+        _ = try? await Shell.osascript("tell application \"Google Chrome\" to close front window")
+        write(r, "pastetest.json")
+    }
+
     static func act() async {
         var r: [String: Any] = [:]
         // Text in place
@@ -741,10 +798,10 @@ enum SelfTest {
         }
     }
 
-    private static func write(_ report: [String: Any]) {
+    private static func write(_ report: [String: Any], _ name: String = "selftest.json") {
         try? FileManager.default.createDirectory(at: History.folder, withIntermediateDirectories: true)
         if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
-            try? data.write(to: History.folder.appendingPathComponent("selftest.json"))
+            try? data.write(to: History.folder.appendingPathComponent(name))
         }
     }
 }

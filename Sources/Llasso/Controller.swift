@@ -321,7 +321,7 @@ final class Controller {
                 ctx.integration = self.context.integration
                 ctx.integrationHint = self.context.integrationHint
                 self.context = ctx
-                self.pill.tag = ctx.tag + "  ·  " + ctx.kind.rawValue
+                self.pill.tag = ctx.tag + " · " + ctx.kind.rawValue
                 self.pill.tagKnown = ctx.documentPath != nil || ctx.url != nil || ctx.integration != nil || ctx.source != nil
             }
         }
@@ -346,7 +346,7 @@ final class Controller {
             let client = await Integrations.shared.client(for: integration)
             guard let self, client != nil, self.phase == .prompting else { return client }
             self.context.integration = integration.name
-            self.pill.tag = self.context.tag + "  ·  " + self.context.kind.rawValue
+            self.pill.tag = self.context.tag + " · " + self.context.kind.rawValue
             self.pill.tagKnown = true
             return client
         }
