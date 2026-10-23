@@ -146,7 +146,7 @@ final class LassoView: NSView {
         glint.opacity = 0
     }
 
-    /// Left alone: dots let go in random order and drift down as they fade.
+    /// Left alone: dots flare and sparkle away outward, in random order.
     func fray(duration: TimeInterval = 1.2) {
         guard !fraying, let host = layer else { return }
         fraying = true
@@ -181,6 +181,8 @@ enum Dust {
         return out
     }
 
+    /// Each dot flares, then sparkles away outward from the middle of the path, at a random moment
+    /// within `duration`. `drift` is how far it travels.
     @discardableResult
     static func scatter(along path: CGPath, gap: CGFloat, dotSize: CGFloat, colour: NSColor, opacity: Float,
                         drift: CGFloat, duration: TimeInterval, into host: CALayer) -> CALayer {
@@ -188,28 +190,48 @@ enum Dust {
         container.frame = host.bounds
         host.addSublayer(container)
         let now = CACurrentMediaTime()
-        let fall = min(0.55, duration * 0.45)
-        for p in points(along: path, gap: gap) {
+        let life = min(0.6, duration * 0.5)
+        let bounds = path.boundingBoxOfPath
+        let centre = CGPoint(x: bounds.midX, y: bounds.midY)
+        for (i, p) in points(along: path, gap: gap).enumerated() {
             let dot = CALayer()
             dot.bounds = CGRect(x: 0, y: 0, width: dotSize, height: dotSize)
             dot.cornerRadius = dotSize / 2
             dot.backgroundColor = colour.cgColor
             dot.position = p
             dot.opacity = 0
-            let fade = CABasicAnimation(keyPath: "opacity")
-            fade.fromValue = opacity
-            fade.toValue = 0
-            let sink = CABasicAnimation(keyPath: "position.y")
-            sink.fromValue = p.y
-            sink.toValue = p.y - drift * CGFloat.random(in: 0.5...1)
+            // Every fifth dot glints as it goes.
+            if i % 5 == 0 {
+                dot.shadowColor = Palette.glint.cgColor
+                dot.shadowOffset = .zero
+                dot.shadowRadius = 2
+                dot.shadowOpacity = 1
+            }
+            // Outward from the middle, give or take 20 degrees.
+            let angle = atan2(p.y - centre.y, p.x - centre.x) + CGFloat.random(in: -0.35...0.35)
+            let distance = drift * CGFloat.random(in: 0.5...1.15)
+            let end = CGPoint(x: p.x + cos(angle) * distance, y: p.y + sin(angle) * distance)
+
+            let move = CABasicAnimation(keyPath: "position")
+            move.fromValue = NSValue(point: p)
+            move.toValue = NSValue(point: end)
+            move.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.8, 0.4, 1)
+            let fade = CAKeyframeAnimation(keyPath: "opacity")
+            fade.values = [opacity, 1, 0]
+            fade.keyTimes = [0, 0.2, 1]
+            let flare = CAKeyframeAnimation(keyPath: "transform.scale")
+            flare.values = [1, 2.2, 0.3]
+            flare.keyTimes = [0, 0.2, 1]
+            let shine = CAKeyframeAnimation(keyPath: "backgroundColor")
+            shine.values = [colour.cgColor, Palette.glint.cgColor, colour.cgColor]
+            shine.keyTimes = [0, 0.2, 1]
             let group = CAAnimationGroup()
-            group.animations = [fade, sink]
-            group.duration = fall
-            group.beginTime = now + Double.random(in: 0...(duration - fall))
-            group.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            group.animations = [move, fade, flare, shine]
+            group.duration = life
+            group.beginTime = now + Double.random(in: 0...(duration - life))
             group.fillMode = .both
             group.isRemovedOnCompletion = false
-            dot.add(group, forKey: "fray")
+            dot.add(group, forKey: "sparkle")
             container.addSublayer(dot)
         }
         return container
