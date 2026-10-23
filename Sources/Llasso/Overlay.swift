@@ -191,7 +191,9 @@ final class SelectionView: NSView {
 /// A floating, borderless panel for the prompt pill and the result card. It can take
 /// keyboard focus without activating any other window.
 final class FloatingPanel: NSPanel {
-    init(size: CGSize) {
+    /// `pinned` keeps the panel on the desktop it first appears on, as a job's card should be;
+    /// otherwise it follows the user to every desktop, as the prompt does.
+    init(size: CGSize, pinned: Bool = false) {
         super.init(contentRect: CGRect(origin: .zero, size: size),
                    styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         isOpaque = false
@@ -199,7 +201,7 @@ final class FloatingPanel: NSPanel {
         // The glass draws its own soft shadow or glow inside the window's margin.
         hasShadow = false
         level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        collectionBehavior = pinned ? [.fullScreenAuxiliary, .ignoresCycle] : [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         isReleasedWhenClosed = false
         becomesKeyOnlyIfNeeded = false
         isMovableByWindowBackground = true

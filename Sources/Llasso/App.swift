@@ -37,15 +37,15 @@ final class HotKey {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var hotKey: HotKey?
     private let watcher = DragWatcher()
     private var offer: Offer?
     private var gestureRetry: Timer?
     private var statusTimer: Timer?
-    /// Menu items for the task list carry this tag so they can be rebuilt each time.
-    private static let taskTag = 77
+    private var menu: NSMenu?
+    private var popover: NSPopover?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installEditMenu()
@@ -58,8 +58,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(withTitle: "Show history", action: #selector(history), keyEquivalent: "").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Llasso", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        menu.delegate = self
-        item.menu = menu
+        self.menu = menu
+        // A click opens the request list; a right-click or ⌃-click opens the menu.
+        item.button?.target = self
+        item.button?.action = #selector(statusClicked(_:))
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         statusItem = item
         item.button?.imagePosition = .imageLeading
         // The menu bar icon shows how many jobs are running or waiting on the user.
@@ -155,6 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @MainActor private func refreshStatus() {
+        if popover?.isShown == true { TasksModel.shared.sync() }
         let jobs = Controller.shared.jobs
         let running = jobs.filter(\.isRunning).count
         let waiting = jobs.filter { $0.needsYou && !$0.isRunning }.count
@@ -166,42 +170,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem?.button?.contentTintColor = waiting > 0 ? Palette.gold : nil
     }
 
-    /// Rebuild the task list each time the menu opens: one line per job, newest first.
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        MainActor.assumeIsolated {
-            menu.items.filter { $0.tag == Self.taskTag }.forEach(menu.removeItem)
-            let jobs = Controller.shared.jobs
-            guard !jobs.isEmpty else { return }
-            var at = 2   // after "Draw a box" and its separator
-            func add(_ item: NSMenuItem) { item.tag = Self.taskTag; menu.insertItem(item, at: at); at += 1 }
-            let header = NSMenuItem(title: "Tasks", action: nil, keyEquivalent: "")
-            header.isEnabled = false
-            add(header)
-            for job in jobs.reversed() {
-                let mark = job.isRunning ? "◐" : job.needsYou ? "●" : job.card.state == .failed ? "✕" : "✓"
-                let what = job.isRunning ? (job.card.working ?? "Working") : job.needsYou ? "Needs you" : job.card.state == .failed ? "Stopped" : "Done"
-                let mins = Int(Date().timeIntervalSince(job.started) / 60)
-                let item = NSMenuItem(title: "\(mark)  \(String(job.title.prefix(48)))", action: #selector(showJob(_:)), keyEquivalent: "")
-                item.toolTip = "\(what) · \(mins == 0 ? "just now" : "\(mins) min ago")"
-                item.representedObject = job.id
-                item.target = self
-                add(item)
-            }
-            if jobs.contains(where: { !$0.isRunning && !$0.needsYou }) {
-                let clear = NSMenuItem(title: "Clear finished", action: #selector(clearFinished), keyEquivalent: "")
-                clear.target = self
-                add(clear)
-            }
-            add(.separator())
+    @objc private func statusClicked(_ sender: NSStatusBarButton) {
+        let event = NSApp.currentEvent
+        if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
+            guard let menu, let item = statusItem else { return }
+            item.menu = menu
+            item.button?.performClick(nil)
+            item.menu = nil
+            return
         }
+        MainActor.assumeIsolated { toggleTasks(from: sender) }
     }
 
-    @objc private func showJob(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? UUID else { return }
-        DispatchQueue.main.async { Controller.shared.showJob(id: id) }
+    @MainActor func toggleTasks() {
+        if let button = statusItem?.button { toggleTasks(from: button) }
     }
 
-    @objc private func clearFinished() { DispatchQueue.main.async { Controller.shared.clearFinished() } }
+    @MainActor private func toggleTasks(from button: NSStatusBarButton) {
+        if let popover, popover.isShown { popover.performClose(nil); return }
+        let model = TasksModel.shared
+        model.sync()
+        model.loadEarlier()
+        let p = popover ?? NSPopover()
+        p.behavior = .transient
+        p.contentViewController = NSHostingController(rootView: TasksView(
+            model: model,
+            onShow: { [weak p] job in p?.performClose(nil); job.show() },
+            onDraw: { [weak p] in p?.performClose(nil); DispatchQueue.main.async { Controller.shared.begin() } },
+            onClear: { Controller.shared.clearFinished(); model.sync() },
+            onSettings: { [weak p] in p?.performClose(nil); SettingsWindow.show() },
+            onQuit: { NSApp.terminate(nil) }))
+        popover = p
+        NSApp.activate(ignoringOtherApps: true)
+        p.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
+
 
     @objc private func draw() { DispatchQueue.main.async { Controller.shared.begin() } }
     @objc private func settings() { SettingsWindow.show() }
@@ -692,6 +695,19 @@ enum SelfTest {
 
     /// Two jobs at once; a click away from the first while it works; both finish. Also measures
     /// where the prompt's mic sits. Writes jobtest.json.
+    /// Saves the open popover as a PNG beside the test reports.
+    static func snapshotPanel(_ name: String) {
+        guard let w = NSApp.windows.first(where: { $0.isVisible && String(describing: type(of: $0)).contains("Popover") }) else { return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        // The screen region, so the frosted backdrop shows as the user sees it.
+        let top = NSScreen.screens.first?.frame.maxY ?? 0
+        let f = w.frame
+        p.arguments = ["-x", "-R", "\(Int(f.minX)),\(Int(top - f.maxY)),\(Int(f.width)),\(Int(f.height))",
+                       History.folder.appendingPathComponent(name).path]
+        try? p.run(); p.waitUntilExit()
+    }
+
     static func jobs() async {
         var r: [String: Any] = [:]
         guard let screen = NSScreen.main else { return }
@@ -713,7 +729,24 @@ enum SelfTest {
         Controller.shared.hideCardsForTest(at: click)
         r["a.hiddenAfterClick"] = !a.isVisible
         r["a.runningAfterClick"] = a.isRunning
+        // The request list, with both running.
+        let delegate = NSApp.delegate as? AppDelegate
+        delegate?.toggleTasks()
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        r["panel.rowsWhileRunning"] = TasksModel.shared.jobs.count
+        snapshotPanel("tasks-running.png")
+        delegate?.toggleTasks()
+        // Two changes queued at once run one after the other.
+        var order: [String] = []
+        async let one: Void? = try? ActionQueue.run { order.append("1 start"); try await Task.sleep(nanoseconds: 300_000_000); order.append("1 end") }
+        async let two: Void? = try? ActionQueue.run { order.append("2 start"); order.append("2 end") }
+        _ = await (one, two)
+        r["queue.order"] = order
         for _ in 0..<120 where a.isRunning || b.isRunning { try? await Task.sleep(nanoseconds: 500_000_000) }
+        delegate?.toggleTasks()
+        try? await Task.sleep(nanoseconds: 700_000_000)
+        snapshotPanel("tasks-done.png")
+        delegate?.toggleTasks()
         r["a.state"] = "\(a.card.state)"
         r["a.answer"] = a.card.answer
         r["b.answer"] = b.card.answer

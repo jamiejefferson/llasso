@@ -249,7 +249,8 @@ enum LassoWindow {
         w.hasShadow = false
         w.ignoresMouseEvents = true
         w.level = level
-        w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        // The box stays on the desktop it was drawn on.
+        w.collectionBehavior = [.fullScreenAuxiliary, .ignoresCycle]
         w.isReleasedWhenClosed = false
         let view = LassoView(frame: CGRect(origin: .zero, size: frame.size))
         w.contentView = view

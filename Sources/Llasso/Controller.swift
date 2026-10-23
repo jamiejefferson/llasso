@@ -129,9 +129,11 @@ final class Controller {
         jobs.first { $0.id == id }?.show()
     }
 
-    /// Close every job that has finished and isn't waiting on the user.
+    /// Close every job that has finished and isn't waiting on the user, and drop it from the list.
     func clearFinished() {
-        for job in jobs where !job.isRunning && !job.needsYou { job.close() }
+        let finished = jobs.filter { !$0.isRunning && !$0.needsYou }
+        for job in finished where !job.closed { job.close() }
+        jobs.removeAll { j in finished.contains { $0 === j } }
     }
 
     /// The hotkey. Pressed again mid-job, it cancels.
@@ -397,7 +399,11 @@ final class Controller {
         let usedVoice = voice.isRunning && !pill.typed
         let job = Job(frontApp: frontApp, box: box, verb: pill.verb, context: context,
                       integration: integration, speaker: speaker)
-        job.onClose = { [weak self] j in self?.jobs.removeAll { $0 === j } }
+        // A closed job stays in the task list until cleared; only the oldest closed ones drop off.
+        job.onClose = { [weak self] _ in
+            guard let self else { return }
+            while self.jobs.count > 40, let i = self.jobs.firstIndex(where: \.closed) { self.jobs.remove(at: i) }
+        }
         jobs.append(job)
         // The job owns the capture and the app's connection now; the prompt resets.
         let capture = captureTask, connection = mcpTask

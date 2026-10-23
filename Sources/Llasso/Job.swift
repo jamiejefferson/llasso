@@ -69,11 +69,15 @@ final class Job {
     // MARK: State for the menu
 
     var title: String { card.title == "…" ? "Starting…" : card.title }
-    var isRunning: Bool { card.state == .thinking || card.state == .streaming || card.working != nil }
+    /// Closed with ×: kept in the task list until cleared, but no longer running or waiting.
+    private(set) var closed = false
+    var isRunning: Bool { !closed && (card.state == .thinking || card.state == .streaming || card.working != nil) }
     /// Waiting on the user: a question, an approval, or a result not yet placed.
     var needsYou: Bool {
-        card.question != nil || card.step != nil || (card.proposal != nil && card.proposal?.done == nil && !(card.proposal?.destinations.isEmpty ?? true))
+        !closed && (card.question != nil || card.step != nil
+            || (card.proposal != nil && card.proposal?.done == nil && !(card.proposal?.destinations.isEmpty ?? true)))
     }
+    var appName: String { context.appName ?? "" }
     var isVisible: Bool { cardPanel?.isVisible ?? false }
 
     func contains(_ point: CGPoint) -> Bool { cardPanel.map { $0.isVisible && $0.frame.contains(point) } ?? false }
@@ -82,7 +86,13 @@ final class Job {
     // MARK: Card
 
     func show() {
-        let panel = cardPanel ?? FloatingPanel(size: CGSize(width: 520 + 2 * Glass.margin, height: 120))
+        // Called up from the task list on another desktop: rebuild the card here, since a card
+        // stays on the desktop where it first appeared.
+        if let old = cardPanel, !old.isVisible, !old.isOnActiveSpace {
+            old.close(); cardPanel = nil
+            outline?.close(); outline = nil; lasso = nil
+        }
+        let panel = cardPanel ?? FloatingPanel(size: CGSize(width: 520 + 2 * Glass.margin, height: 120), pinned: true)
         if cardPanel == nil {
             panel.contentView = NSHostingView(rootView: CardView(model: card) { [weak panel] h in panel?.setHeight(h) })
             cardPanel = panel
@@ -99,6 +109,7 @@ final class Job {
     }
 
     func close() {
+        closed = true
         decide(nil)
         streamTask?.cancel()
         streamTask = nil
@@ -343,7 +354,9 @@ final class Job {
         if case .text(let text, _) = p, let place = cardP.destinations.first(where: { if case .replaceInPlace = $0 { return true }; return false }) {
             card.working = "Putting it back…"
             do {
-                let result = try await Actuator.text(text, to: place, context: context, app: frontApp)
+                let result = try await ActionQueue.run { [context, frontApp] in
+                    try await Actuator.text(text, to: place, context: context, app: frontApp)
+                }
                 card.working = nil
                 card.proposal?.done = result
                 card.proposal?.destinations = [.undoText(app: context.appName ?? "the app"), .copy]
@@ -462,17 +475,7 @@ final class Job {
         card.working = d == .run ? "Running…" : "Working…"
         Task {
             do {
-                let result: String
-                switch p {
-                case .text(let text, _): result = try await Actuator.text(text, to: d, context: ctx, app: app)
-                case .image:
-                    guard let image else { throw ActionError.failed("The edited image is missing.") }
-                    let fit = self.capture.flatMap { NSBitmapImageRep(data: $0.crop) }
-                        .map { CGSize(width: $0.pixelsWide, height: $0.pixelsHigh) }
-                    result = try await Actuator.image(image, to: d, context: ctx, app: app, fit: fit, points: self.box.rect.size)
-                case .cells(let start, let rows, _): result = try await Actuator.cells(start: start, rows: rows, to: d, context: ctx, app: app)
-                case .script(let source, _): result = try await Actuator.run(script: source)
-                }
+                let result = try await ActionQueue.run { try await self.act(p, to: d, context: ctx, app: app, image: image) }
                 card.working = nil
                 card.proposal?.done = result
                 card.proposal?.note = nil
@@ -490,6 +493,20 @@ final class Job {
                 card.working = nil
                 card.error = error.localizedDescription
             }
+        }
+    }
+
+    private func act(_ p: Proposal, to d: Destination, context ctx: ScreenContext, app: NSRunningApplication?,
+                     image: Data?) async throws -> String {
+        switch p {
+        case .text(let text, _): return try await Actuator.text(text, to: d, context: ctx, app: app)
+        case .image:
+            guard let image else { throw ActionError.failed("The edited image is missing.") }
+            let fit = capture.flatMap { NSBitmapImageRep(data: $0.crop) }
+                .map { CGSize(width: $0.pixelsWide, height: $0.pixelsHigh) }
+            return try await Actuator.image(image, to: d, context: ctx, app: app, fit: fit, points: box.rect.size)
+        case .cells(let start, let rows, _): return try await Actuator.cells(start: start, rows: rows, to: d, context: ctx, app: app)
+        case .script(let source, _): return try await Actuator.run(script: source)
         }
     }
 
