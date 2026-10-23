@@ -148,12 +148,12 @@ final class SelectionView: NSView {
         }
         // The thread at full gold while you draw, with a bead of light at the pointer.
         let thread = NSBezierPath(roundedRect: selection, xRadius: 8, yRadius: 8)
-        thread.lineWidth = 1
+        thread.lineWidth = LassoView.dotSize
         thread.lineCapStyle = .round
         thread.setLineDash([0.01, LassoView.restingGap], count: 2, phase: 0)
         NSGraphicsContext.saveGraphicsState()
         NSAffineTransform(transform: AffineTransform(translationByX: 0.5, byY: -0.6)).concat()
-        NSColor(white: 0, alpha: 0.3).setStroke()
+        NSColor(white: 0, alpha: 0.4).setStroke()
         thread.stroke()
         NSGraphicsContext.restoreGraphicsState()
         Palette.gold.setStroke()

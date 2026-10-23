@@ -36,8 +36,10 @@ final class LassoView: NSView {
     enum State { case resting, focused }
 
     static let margin: CGFloat = 26
-    static let restingOpacity: Float = 0.55
-    static let restingGap: CGFloat = 5
+    static let restingOpacity: Float = 0.8
+    static let restingGap: CGFloat = 4.5
+    /// Dot diameter: 1.4pt reads on busy pages without looking heavy.
+    static let dotSize: CGFloat = 1.4
     static let focusedGap: CGFloat = 3.5
 
     private let shadowDots = CAShapeLayer()
@@ -60,10 +62,10 @@ final class LassoView: NSView {
             l.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
             layer?.addSublayer(l)
         }
-        shadowDots.strokeColor = NSColor(white: 0, alpha: 0.32).cgColor
-        shadowDots.lineWidth = 1
+        shadowDots.strokeColor = NSColor(white: 0, alpha: 0.4).cgColor
+        shadowDots.lineWidth = Self.dotSize
         dots.strokeColor = Palette.gold.cgColor
-        dots.lineWidth = 1
+        dots.lineWidth = Self.dotSize
         halo.strokeColor = Palette.gold.withAlphaComponent(0.22).cgColor
         halo.lineWidth = 1.5
         halo.shadowColor = Palette.gold.cgColor
@@ -72,7 +74,7 @@ final class LassoView: NSView {
         halo.shadowOpacity = 0.9
         halo.opacity = 0
         glint.strokeColor = Palette.glint.cgColor
-        glint.lineWidth = 1.5
+        glint.lineWidth = 1.8
         glint.shadowColor = Palette.gold.cgColor
         glint.shadowOffset = .zero
         glint.shadowRadius = 3
@@ -151,7 +153,7 @@ final class LassoView: NSView {
         stopGlint()
         let gap = state == .focused ? Self.focusedGap : Self.restingGap
         let path = CGPath(roundedRect: boxRect, cornerWidth: 8, cornerHeight: 8, transform: nil)
-        dust = Dust.scatter(along: path, gap: gap, dotSize: 1.2, colour: Palette.gold,
+        dust = Dust.scatter(along: path, gap: gap, dotSize: Self.dotSize, colour: Palette.gold,
                             opacity: dots.opacity, drift: 20, duration: duration, into: host)
         dots.opacity = 0
         shadowDots.opacity = 0
