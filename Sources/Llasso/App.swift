@@ -509,6 +509,10 @@ enum SelfTest {
             Actuator.press(124, command: false)
             try await Task.sleep(nanoseconds: 300_000_000)
             r["selection after collapse"] = await Actuator.hasSelection(in: chrome)
+            // A caret in a text box with nothing selected, as in a chat's message field: typed at the caret.
+            _ = try await Actuator.text("Hi Dex", to: .replaceInPlace(app: "Google Chrome"), context: ctx, app: chrome)
+            for _ in 0..<20 where !title().contains("Hi Dex") { try await Task.sleep(nanoseconds: 100_000_000) }
+            r["at caret"] = title()
         } catch { r["error"] = error.localizedDescription }
         _ = try? await Shell.osascript("tell application \"Google Chrome\" to close front window")
         write(r, "pastetest.json")

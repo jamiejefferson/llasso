@@ -142,6 +142,14 @@ enum Actuator {
         // ⌘C proves there is a selection, so nothing lands at a stray caret, and hands over
         // the selection's formatting for the replacement to wear.
         guard let copied = await copySelection(in: app) else {
+            // Nothing selected, but the caret sits in a text box (a chat's message field):
+            // the text goes in at the caret.
+            let el = AXUIElementCreateApplication(app.processIdentifier)
+            if let caret: AXUIElement = ContextReader.attr(el, kAXFocusedUIElementAttribute), ContextReader.editable(caret) {
+                Log.write("replace: nothing selected; typed at the caret")
+                try await paste(.string(text), into: app)
+                return
+            }
             throw ActionError.failed("Nothing is selected in \(c.appName ?? "the app"). Select the text, then tap Replace.")
         }
         try await paste(await styled(text, like: copied), into: app)
