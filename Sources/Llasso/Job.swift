@@ -353,9 +353,8 @@ final class Job {
                                model: Settings.shared.model, actions: actions)
                 return Outcome(text: "\(result) The user can undo it from the card. Do not repeat the text.", endsTurn: true)
             } catch {
-                // Couldn't put it back (nothing selected, app refused): leave the choice to the user.
+                // Couldn't put it back (nothing selected, app busy): Replace stays on the card to try again.
                 card.working = nil
-                card.proposal?.destinations.removeAll { $0 == place }
                 card.proposal?.note = error.localizedDescription
             }
         }
@@ -476,7 +475,9 @@ final class Job {
                 }
                 card.working = nil
                 card.proposal?.done = result
+                card.proposal?.note = nil
                 if case .undoText = d { card.proposal?.destinations = [.copy] }
+                if case .replaceInPlace = d { card.proposal?.destinations = [.undoText(app: ctx.appName ?? "the app"), .copy] }
                 actions.append(d.label)
                 messages.append(.user("(Llasso note, not from the user) The user chose “\(d.label)”. \(result)"))
                 History.append(prompt: lastPrompt, verb: verb, context: ctx, answer: card.answer,

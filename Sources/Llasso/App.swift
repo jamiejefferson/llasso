@@ -109,6 +109,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if CommandLine.arguments.contains("--pastetest") {
             Task { @MainActor in await SelfTest.pasteOver(); NSApp.terminate(nil) }
         }
+        if CommandLine.arguments.contains("--fronttest") {
+            Task { @MainActor in await SelfTest.front(); NSApp.terminate(nil) }
+        }
         if CommandLine.arguments.contains("--looktest") {
             Task { @MainActor in await SelfTest.look(); NSApp.terminate(nil) }
         }
@@ -419,6 +422,33 @@ enum SelfTest {
     /// Replace a selection in a Chrome page Accessibility is told nothing about (the Google Docs case):
     /// ⌘C finds the selection, the paste lands over it, and Undo puts it back. The page copies its
     /// text into its title so the result can be read from the window. Writes pastetest.json.
+    /// Brings IDEalize forward from behind Finder and records what each focus signal said,
+    /// poll by poll. Types nothing.
+    static func front() async {
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "ai.projject.idealize.v1").first else {
+            write(["error": "IDEalize isn't running"], "fronttest.json"); return
+        }
+        var r: [String: Any] = ["app pid": app.processIdentifier, "llasso pid": ProcessInfo.processInfo.processIdentifier]
+        ContextReader.wake(AXUIElementCreateApplication(app.processIdentifier), pid: app.processIdentifier)
+        // The real sequence: Llasso takes the front for the box and prompt, the prompt closes and
+        // hands the front back, the card appears, and seconds later the answer goes back.
+        NSApp.activate(ignoringOtherApps: true)
+        let pill = FloatingPanel(size: CGSize(width: 300, height: 80))
+        pill.makeKeyAndOrderFront(nil)
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        r["while prompting"] = Actuator.focusReport()
+        pill.orderOut(nil)
+        if NSApp.isActive { app.activate() }
+        let card = FloatingPanel(size: CGSize(width: 300, height: 120))
+        card.orderFrontRegardless()
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        r["after prompt closed"] = Actuator.focusReport() + ", llasso active \(NSApp.isActive), key window \(NSApp.keyWindow.map { _ in "yes" } ?? "no")"
+        do { try await Actuator.bringForward(app); r["bringForward"] = "ok" } catch { r["bringForward"] = error.localizedDescription }
+        r["after"] = Actuator.focusReport()
+        card.orderOut(nil)
+        write(r, "fronttest.json")
+    }
+
     static func pasteOver() async {
         var r: [String: Any] = [:]
         let page = FileManager.default.temporaryDirectory.appendingPathComponent("llasso-pastetest.html")

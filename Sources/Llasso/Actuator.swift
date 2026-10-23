@@ -212,27 +212,56 @@ enum Actuator {
     }
 
     /// Bring the boxed app to the front and wait until it is, because a keystroke sent before
-    /// then lands in whichever app is in front. Throws rather than type into the wrong app.
+    /// then lands in whichever app is in front. Asks again halfway, this time also through
+    /// Accessibility, since a busy Electron app can miss the first request. Throws rather than
+    /// type into the wrong app.
     static func bringForward(_ app: NSRunningApplication) async throws {
-        if #available(macOS 14.0, *) { NSApp.yieldActivation(to: app) }
-        app.activate(options: [.activateAllWindows])
-        for _ in 0..<20 {
+        func ask() {
+            if #available(macOS 14.0, *) { NSApp.yieldActivation(to: app) }
+            app.activate(options: [.activateAllWindows])
+        }
+        ask()
+        for i in 0..<40 {
             if isFront(app) {
                 try await Task.sleep(nanoseconds: 150_000_000)
                 return
             }
+            if i == 15 {
+                ask()
+                let appEl = AXUIElementCreateApplication(app.processIdentifier)
+                AXUIElementSetAttributeValue(appEl, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+                if let window: AXUIElement = ContextReader.attr(appEl, kAXMainWindowAttribute) {
+                    AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+                }
+            }
             try await Task.sleep(nanoseconds: 50_000_000)
         }
+        Log.write("front: \(app.localizedName ?? "?") \(app.processIdentifier) never came forward; \(focusReport())")
         throw ActionError.failed("\(app.localizedName ?? "The app") wouldn't come to the front, so Llasso typed nothing.")
     }
 
-    /// Whether `app` has keyboard focus right now. Accessibility answers live; NSWorkspace's
-    /// frontmost app can lag a focus change by a beat.
-    static func isFront(_ app: NSRunningApplication) -> Bool {
+    /// The pid Accessibility names as focused, or nil when it can't say (a busy app can make
+    /// the system-wide query fail).
+    static func focusedPid() -> pid_t? {
+        var value: CFTypeRef?
         let system = AXUIElementCreateSystemWide()
-        guard let focused: AXUIElement = ContextReader.attr(system, kAXFocusedApplicationAttribute) else { return false }
+        AXUIElementSetMessagingTimeout(system, 0.25)
+        guard AXUIElementCopyAttributeValue(system, kAXFocusedApplicationAttribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
         var pid: pid_t = 0
-        return AXUIElementGetPid(focused, &pid) == .success && pid == app.processIdentifier
+        return AXUIElementGetPid(value as! AXUIElement, &pid) == .success ? pid : nil
+    }
+
+    static func focusReport() -> String {
+        "ax \(focusedPid().map(String.init) ?? "no answer"), workspace \(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0)"
+    }
+
+    /// Whether `app` has keyboard focus right now. Accessibility answers live; NSWorkspace's
+    /// frontmost app can lag a focus change by a beat, so it counts only when Accessibility
+    /// can't answer and the app itself agrees it is active.
+    static func isFront(_ app: NSRunningApplication) -> Bool {
+        if let pid = focusedPid() { return pid == app.processIdentifier }
+        return app.isActive && NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier
     }
 
     /// Send a keystroke to `app`, refusing if another app has taken the front since.
