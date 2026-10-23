@@ -217,6 +217,13 @@ enum Actuator {
     /// type into the wrong app.
     static func bringForward(_ app: NSRunningApplication) async throws {
         func ask() {
+            // A Llasso panel can keep the keyboard while the app is already in front (the card
+            // takes key when the prompt closes). Taking the front for a moment and handing it
+            // over moves the keyboard to the app's own window.
+            if NSApp.keyWindow != nil || focusedPid() == ProcessInfo.processInfo.processIdentifier {
+                NSApp.keyWindow?.makeFirstResponder(nil)
+                NSApp.activate(ignoringOtherApps: true)
+            }
             if #available(macOS 14.0, *) { NSApp.yieldActivation(to: app) }
             app.activate(options: [.activateAllWindows])
         }

@@ -441,10 +441,15 @@ enum SelfTest {
         try? await Task.sleep(nanoseconds: 800_000_000)
         r["while prompting"] = Actuator.focusReport()
         pill.orderOut(nil)
-        if NSApp.isActive { app.activate() }
+        NSApp.activate(ignoringOtherApps: true)
+        if #available(macOS 14.0, *) { NSApp.yieldActivation(to: app) }
+        app.activate()
+        try? await Task.sleep(nanoseconds: 800_000_000)
         let card = FloatingPanel(size: CGSize(width: 300, height: 120))
         card.orderFrontRegardless()
-        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        // What Teams showed: the card takes the keyboard while the app is in front.
+        card.makeKey()
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
         r["after prompt closed"] = Actuator.focusReport() + ", llasso active \(NSApp.isActive), key window \(NSApp.keyWindow.map { _ in "yes" } ?? "no")"
         do { try await Actuator.bringForward(app); r["bringForward"] = "ok" } catch { r["bringForward"] = error.localizedDescription }
         r["after"] = Actuator.focusReport()
