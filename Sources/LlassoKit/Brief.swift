@@ -28,10 +28,13 @@ public struct ScreenContext: Sendable, Equatable {
     /// The focused element is a plain text field whose whole value Llasso can set.
     public var canSetField = false
 
-    static let browserBundles: Set<String> = ["com.google.Chrome", "com.apple.Safari", "company.thebrowser.Browser",
+    public static let browserBundles: Set<String> = ["com.google.Chrome", "com.apple.Safari", "company.thebrowser.Browser",
                                               "com.brave.Browser", "com.microsoft.edgemac", "org.mozilla.firefox"]
     /// A browser or web view whose selection Accessibility may not report. Text can still go
     /// back by pasting over the selection, once Llasso has checked there is one.
+    /// A page in a browser or web view. Accessibility edits there drop the page's formatting.
+    public var isWeb: Bool { url != nil || Self.browserBundles.contains(bundleID ?? "") }
+
     public var mayHoldSelection: Bool {
         !canReplaceText && !canSetField && (url != nil || Self.browserBundles.contains(bundleID ?? ""))
     }

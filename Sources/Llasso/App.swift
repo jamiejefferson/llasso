@@ -424,12 +424,12 @@ enum SelfTest {
         let page = FileManager.default.temporaryDirectory.appendingPathComponent("llasso-pastetest.html")
         try? Data("""
         <!doctype html><title>start</title><body style="font:20px sans-serif;padding:40px">
-        <div id=e contenteditable>Avoid a rushed strategy in the agentic AI era</div>
+        <div id=e contenteditable><h1 style="color:#b8862a">Avoid a rushed strategy</h1><p>AI speeds up <b>research</b> and analysis.</p></div>
         <script>
         const e = document.getElementById('e'); e.focus();
         const r = document.createRange(); r.selectNodeContents(e);
         getSelection().removeAllRanges(); getSelection().addRange(r);
-        const t = () => document.title = 'T:' + e.textContent; t();
+        const t = () => document.title = 'T:' + [...e.querySelectorAll('*')].map(n => n.tagName).join(',') + '|' + e.innerHTML; t();
         new MutationObserver(t).observe(e, {subtree: true, characterData: true, childList: true});
         </script>
         """.utf8).write(to: page)
@@ -454,8 +454,14 @@ enum SelfTest {
         var ctx = ScreenContext(appName: "Google Chrome", bundleID: "com.google.Chrome")
         ctx.url = page.absoluteString
         r["offers replace"] = Actuator.destinations(for: .text(text: "x", summary: ""), context: ctx).contains(.replaceInPlace(app: "Google Chrome"))
+        if let copied = await Actuator.copySelection(in: chrome) {
+            r["copied html"] = copied.html ?? "none"
+            if case .rich(let html, _) = await Actuator.styled("Éviter une stratégie bâclée\nL'IA accélère la recherche et l'analyse.", like: copied) {
+                r["styled html"] = html
+            }
+        }
         do {
-            _ = try await Actuator.text("Éviter une stratégie bâclée", to: .replaceInPlace(app: "Google Chrome"), context: ctx, app: chrome)
+            _ = try await Actuator.text("Éviter une stratégie bâclée\nL'IA accélère la recherche et l'analyse.", to: .replaceInPlace(app: "Google Chrome"), context: ctx, app: chrome)
             for _ in 0..<20 where !title().hasPrefix("T:Év") { try await Task.sleep(nanoseconds: 100_000_000) }
             r["after"] = title()
             _ = try await Actuator.text("", to: .undoText(app: "Google Chrome"), context: ctx, app: chrome)

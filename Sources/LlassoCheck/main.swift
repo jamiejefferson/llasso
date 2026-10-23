@@ -209,5 +209,18 @@ if let key = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"], !key.isE
 let blank = ScreenContext(appName: "Figma", bundleID: "com.figma.Desktop", windowTitle: " \u{200B} ")
 check("blank window title leaves no empty tag part", blank.tag == "Figma")
 
+// Rich replacement keeps the copied formatting.
+let docs = "<meta charset='utf-8'><b style=\"font-weight:normal;\" id=\"docs-internal-guid-1\"><p dir=\"ltr\"><span style=\"font-size:26pt;font-weight:700\">Avoid a rushed strategy</span></p><br><p dir=\"ltr\"><span style=\"font-size:11pt\">AI speeds up research &amp; analysis.</span></p></b>"
+let swapped = RichText.swapParagraphs(docs, with: "Éviter une stratégie bâclée\n\nL'IA accélère la recherche & l'analyse.")
+check("paragraph swap keeps every tag", swapped.map { RichText.skeleton($0) == RichText.skeleton(docs) } ?? false)
+check("paragraph swap carries the new words", swapped.map { RichText.plain($0) == "Éviter une stratégie bâclée L'IA accélère la recherche & l'analyse." } ?? false)
+check("heading style stays on the heading", swapped?.contains("26pt;font-weight:700\">Éviter") == true)
+check("mismatched paragraph counts refuse", RichText.swapParagraphs(docs, with: "one line only") == nil)
+let mixed = "<p><span>Make this </span><b>bold</b><span> word count</span></p>"
+check("mixed runs aren't simple", !RichText.isSimple(mixed) && RichText.isSimple(docs))
+check("faithful rewrite accepted", RichText.isFaithful("<p><span>Rends ce </span><b>gras</b><span> mot</span></p>", original: mixed, text: "Rends ce gras mot"))
+check("rewrite that drops a tag rejected", !RichText.isFaithful("<p><span>Rends ce gras mot</span></p>", original: mixed, text: "Rends ce gras mot"))
+check("style blocks aren't text", RichText.plain("<style>p{color:red}</style><p>Hi</p>") == "Hi")
+
 print(failures == 0 ? "All checks passed." : "\(failures) check(s) failed.")
 exit(Int32(failures))

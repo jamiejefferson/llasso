@@ -121,38 +121,78 @@ enum Actuator {
         guard let app else { throw ActionError.failed("The app has closed.") }
         try await bringForward(app)
         let appEl = AXUIElementCreateApplication(app.processIdentifier)
-        guard let focused: AXUIElement = ContextReader.attr(appEl, kAXFocusedUIElementAttribute) else {
-            throw ActionError.failed("\(c.appName ?? "The app") has no text field in focus any more. Click back into it and try again.")
-        }
-        if c.canReplaceText {
+        let focused: AXUIElement? = ContextReader.attr(appEl, kAXFocusedUIElementAttribute)
+        // Native text views keep the selection's style when Accessibility swaps its text.
+        // Web pages don't, so they always take a styled paste instead.
+        if !c.isWeb, c.canReplaceText, let focused {
             if AXUIElementSetAttributeValue(focused, kAXSelectedTextAttribute as CFString, text as CFTypeRef) == .success,
                let value: String = ContextReader.attr(focused, kAXValueAttribute), value.contains(text) {
                 return
             }
             guard allowPaste else { throw ActionError.failed("Accessibility refused the change.") }
-            try await paste(.string(text), into: app)
-            return
-        }
-        if c.canSetField {
-            guard AXUIElementSetAttributeValue(focused, kAXValueAttribute as CFString, text as CFTypeRef) == .success else {
+        } else if !c.isWeb, c.canSetField {
+            guard let focused, AXUIElementSetAttributeValue(focused, kAXValueAttribute as CFString, text as CFTypeRef) == .success else {
                 throw ActionError.failed("\(c.appName ?? "The app") refused the change.")
             }
             return
         }
-        // A browser or Electron page Accessibility can't see into: paste over the selection,
-        // but only after ⌘C proves there is one, so nothing lands at a stray caret.
-        guard allowPaste, c.mayHoldSelection else {
+        guard allowPaste, c.canReplaceText || c.canSetField || c.mayHoldSelection else {
             throw ActionError.failed("Llasso can't put text back in this app. Copy it instead.")
         }
-        guard await hasSelection(in: app) else {
+        // ⌘C proves there is a selection, so nothing lands at a stray caret, and hands over
+        // the selection's formatting for the replacement to wear.
+        guard let copied = await copySelection(in: app) else {
             throw ActionError.failed("Nothing is selected in \(c.appName ?? "the app"). Select the text, then tap Replace.")
         }
-        try await paste(.string(text), into: app)
+        try await paste(await styled(text, like: copied), into: app)
     }
 
-    /// Whether the app has a selection: ⌘C changes the clipboard only when something is selected.
-    /// The clipboard is put back afterwards.
-    static func hasSelection(in app: NSRunningApplication) async -> Bool {
+    struct Copied { var text: String; var html: String? }
+
+    /// The replacement dressed in the selection's formatting. Paragraph-for-paragraph when each
+    /// paragraph is one style; otherwise a model rewrites the copied HTML and Llasso keeps it only
+    /// if every tag survived and the words are exactly the new text. Plain text is the last resort.
+    static func styled(_ text: String, like copied: Copied) async -> Clip {
+        guard let html = copied.html, !RichText.plain(html).isEmpty else {
+            Log.write("replace: plain (no formatting copied)"); return .string(text)
+        }
+        if RichText.isSimple(html), let swapped = RichText.swapParagraphs(html, with: text) {
+            Log.write("replace: paragraph styles kept"); return .rich(html: swapped, text: text)
+        }
+        if let rewritten = await rewrite(html, as: text), RichText.isFaithful(rewritten, original: html, text: text) {
+            Log.write("replace: inline styles kept by rewrite"); return .rich(html: rewritten, text: text)
+        }
+        if let swapped = RichText.swapParagraphs(html, with: text) {
+            Log.write("replace: paragraph styles kept, inline styles lost"); return .rich(html: swapped, text: text)
+        }
+        Log.write("replace: plain (paragraphs didn't line up)")
+        return .string(text)
+    }
+
+    static func rewrite(_ html: String, as text: String) async -> String? {
+        guard html.count < 60_000 else { return nil }
+        let messages: [ChatMessage] = [.system(RichText.rewritePrompt),
+                                       .user("HTML:\n\(html)\n\nNew text:\n\(text)")]
+        return try? await withThrowingTaskGroup(of: String?.self) { group in
+            group.addTask {
+                var out = ""
+                for try await chunk in Settings.shared.client.streamTurn(model: Settings.shared.model, messages: messages, tools: []) {
+                    if case .text(let t) = chunk { out += t }
+                }
+                return out.replacingOccurrences(of: "^```[a-z]*\\s*|\\s*```$", with: "", options: .regularExpression)
+            }
+            group.addTask { try await Task.sleep(nanoseconds: 20_000_000_000); return nil }
+            let first = try await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+    }
+
+    static func hasSelection(in app: NSRunningApplication) async -> Bool { await copySelection(in: app) != nil }
+
+    /// The selection as the app copies it: ⌘C changes the clipboard only when something is
+    /// selected. The clipboard is put back afterwards.
+    static func copySelection(in app: NSRunningApplication) async -> Copied? {
         let pb = NSPasteboard.general
         let saved = pb.pasteboardItems?.map { item -> NSPasteboardItem in
             let copy = NSPasteboardItem()
@@ -160,15 +200,15 @@ enum Actuator {
             return copy
         } ?? []
         let before = pb.changeCount
-        guard (try? await bringForward(app)) != nil else { return false }
-        guard (try? press(8, command: true, to: app)) != nil else { return false }   // ⌘C
+        guard (try? await bringForward(app)) != nil else { return nil }
+        guard (try? press(8, command: true, to: app)) != nil else { return nil }   // ⌘C
         try? await Task.sleep(nanoseconds: 300_000_000)
-        let found = pb.changeCount != before && !(pb.string(forType: .string) ?? "").isEmpty
-        if pb.changeCount != before {
-            pb.clearContents()
-            if !saved.isEmpty { pb.writeObjects(saved) }
-        }
-        return found
+        guard pb.changeCount != before else { return nil }
+        let text = pb.string(forType: .string) ?? ""
+        let html = pb.string(forType: .html)
+        pb.clearContents()
+        if !saved.isEmpty { pb.writeObjects(saved) }
+        return text.isEmpty ? nil : Copied(text: text, html: html)
     }
 
     /// Bring the boxed app to the front and wait until it is, because a keystroke sent before
@@ -312,13 +352,16 @@ enum Actuator {
 
     // MARK: Shared
 
-    enum Clip { case string(String), png(Data) }
+    enum Clip { case string(String), png(Data), rich(html: String, text: String) }
 
     static func copy(_ clip: Clip) {
         let pb = NSPasteboard.general
         pb.clearContents()
         switch clip {
         case .string(let s): pb.setString(s, forType: .string)
+        case .rich(let html, let text):
+            pb.setString(html, forType: .html)
+            pb.setString(text, forType: .string)
         case .png(let d): pb.setData(d, forType: .png)
             if let rep = NSBitmapImageRep(data: d), let tiff = rep.tiffRepresentation { pb.setData(tiff, forType: .tiff) }
         }
