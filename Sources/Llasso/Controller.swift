@@ -106,9 +106,18 @@ final class Controller {
         return job
     }
 
+    /// For the look test: a card on screen without asking the model anything.
+    func showTestCard(box: (rect: CGRect, screen: NSScreen)) -> Job {
+        let job = Job(frontApp: nil, box: box, verb: nil, context: ScreenContext(appName: "Safari", bundleID: nil),
+                      integration: nil, speaker: speaker)
+        job.onClose = { [weak self] j in self?.jobs.removeAll { $0 === j } }
+        jobs.append(job)
+        return job
+    }
+
     /// For the self-test: lay the prompt out and report its mic's offset.
     func measurePill() async -> CGPoint {
-        let panel = FloatingPanel(size: CGSize(width: 560, height: 150))
+        let panel = FloatingPanel(size: CGSize(width: 560 + 2 * Glass.margin, height: 150))
         panel.contentView = NSHostingView(rootView: PillView(model: pill) { [weak panel] h in panel?.setHeight(h) })
         panel.orderFrontRegardless()
         try? await Task.sleep(nanoseconds: 600_000_000)
@@ -344,7 +353,7 @@ final class Controller {
     }
 
     private func showPill(near rect: CGRect, on screen: NSScreen) {
-        let panel = pillPanel ?? FloatingPanel(size: CGSize(width: 560, height: 150))
+        let panel = pillPanel ?? FloatingPanel(size: CGSize(width: 560 + 2 * Glass.margin, height: 150))
         if pillPanel == nil {
             let host = NSHostingView(rootView: PillView(model: pill) { [weak panel] h in panel?.setHeight(h) })
             panel.contentView = host
@@ -358,6 +367,7 @@ final class Controller {
         } else {
             panel.place(near: rect, on: screen)
         }
+        pill.reveal()
         panel.makeKeyAndOrderFront(nil)
     }
 
@@ -404,6 +414,15 @@ final class Controller {
 
     // MARK: End
 
+    /// The prompt winds back into the icon, then its window goes.
+    private func hidePill() {
+        guard let panel = pillPanel, panel.isVisible else { return }
+        pill.conceal { [weak self, weak panel] in
+            guard let self, self.phase != .prompting else { return }
+            panel?.orderOut(nil)
+        }
+    }
+
     func cancel() { cancel(keepingOffer: false) }
 
     /// Reset the prompt. Sent jobs are left alone.
@@ -417,7 +436,7 @@ final class Controller {
         captureTask = nil
         if !keepingVoice { voice.abandon() }
         pill.listening = false
-        pillPanel?.orderOut(nil)
+        hidePill()
         overlays.forEach { $0.orderOut(nil) }
         overlays.removeAll()
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }

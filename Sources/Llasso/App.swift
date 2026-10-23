@@ -50,7 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         installEditMenu()
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = NSImage(systemSymbolName: "lasso", accessibilityDescription: "Llasso")
+        item.button?.image = NSImage.llassoMark()
         let menu = NSMenu()
         menu.addItem(withTitle: "Draw a box   ⌃⌥S", action: #selector(draw), keyEquivalent: "").target = self
         menu.addItem(.separator())
@@ -106,6 +106,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if CommandLine.arguments.contains("--acttest") {
             Task { @MainActor in await SelfTest.act(); NSApp.terminate(nil) }
         }
+        if CommandLine.arguments.contains("--looktest") {
+            Task { @MainActor in await SelfTest.look(); NSApp.terminate(nil) }
+        }
         if CommandLine.arguments.contains("--jobtest") {
             Task { @MainActor in await SelfTest.jobs(); NSApp.terminate(nil) }
         }
@@ -154,7 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             statusItem?.length = title.isEmpty ? NSStatusItem.squareLength : NSStatusItem.variableLength
             statusItem?.button?.title = title
         }
-        statusItem?.button?.contentTintColor = waiting > 0 ? Palette.amber : nil
+        statusItem?.button?.contentTintColor = waiting > 0 ? Palette.gold : nil
     }
 
     /// Rebuild the task list each time the menu opens: one line per job, newest first.

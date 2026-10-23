@@ -12,6 +12,7 @@ final class Job {
     let started = Date()
     private var cardPanel: FloatingPanel?
     private var outline: NSWindow?
+    private var lasso: LassoView?
     private let speaker: Speaker
 
     let frontApp: NSRunningApplication?
@@ -81,7 +82,7 @@ final class Job {
     // MARK: Card
 
     func show() {
-        let panel = cardPanel ?? FloatingPanel(size: CGSize(width: 520, height: 120))
+        let panel = cardPanel ?? FloatingPanel(size: CGSize(width: 520 + 2 * Glass.margin, height: 120))
         if cardPanel == nil {
             panel.contentView = NSHostingView(rootView: CardView(model: card) { [weak panel] h in panel?.setHeight(h) })
             cardPanel = panel
@@ -109,15 +110,10 @@ final class Job {
 
     private func showOutline() {
         if outline == nil {
-            let o = NSWindow(contentRect: box.rect.insetBy(dx: -3, dy: -3), styleMask: [.borderless], backing: .buffered, defer: false)
-            o.isOpaque = false
-            o.backgroundColor = .clear
-            o.ignoresMouseEvents = true
-            o.level = .floating
-            o.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-            o.isReleasedWhenClosed = false
-            o.contentView = DashedOutline(frame: CGRect(origin: .zero, size: o.frame.size))
+            let (o, view) = LassoWindow.make(round: box.rect)
+            view.apply(.resting, animated: false)
             outline = o
+            lasso = view
         }
         outline?.orderFrontRegardless()
     }
@@ -521,15 +517,4 @@ final class Job {
         finished()
     }
 
-}
-
-/// The dashed amber outline round a box; it ignores the mouse.
-final class DashedOutline: NSView {
-    override func draw(_ dirtyRect: NSRect) {
-        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 2), xRadius: 6, yRadius: 6)
-        path.lineWidth = 1.5
-        path.setLineDash([5, 4], count: 2, phase: 0)
-        Palette.amber.withAlphaComponent(0.85).setStroke()
-        path.stroke()
-    }
 }

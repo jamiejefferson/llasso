@@ -510,17 +510,32 @@ enum Pointer {
         var label = ""
         override func draw(_ dirtyRect: NSRect) {
             let r = CGRect(x: 6, y: 6, width: 52, height: 52)
-            Palette.amber.setStroke()
             let path = NSBezierPath(ovalIn: r)
-            path.lineWidth = 4
+            NSGraphicsContext.saveGraphicsState()
+            let glow = NSShadow()
+            glow.shadowColor = Palette.gold.withAlphaComponent(0.8)
+            glow.shadowBlurRadius = 6
+            glow.set()
+            Palette.gold.withAlphaComponent(0.35).setStroke()
+            path.lineWidth = 2
+            path.stroke()
+            NSGraphicsContext.restoreGraphicsState()
+            path.lineWidth = 1.5
+            path.lineCapStyle = .round
+            path.setLineDash([0.01, 4], count: 2, phase: 0)
+            Palette.gold.setStroke()
             path.stroke()
             let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13, weight: .semibold),
-                                                        .foregroundColor: Palette.ink]
+                                                        .foregroundColor: NSColor(white: 0.08, alpha: 1)]
             let text = NSAttributedString(string: label, attributes: attrs)
             let w = min(240, text.size().width + 20)
             let pill = CGRect(x: 66, y: 20, width: w, height: 24)
-            Palette.amber.setFill()
-            NSBezierPath(roundedRect: pill, xRadius: 12, yRadius: 12).fill()
+            let shape = NSBezierPath(roundedRect: pill, xRadius: 12, yRadius: 12)
+            NSColor(white: 1, alpha: 0.92).setFill()
+            shape.fill()
+            Palette.gold.setStroke()
+            shape.lineWidth = 1
+            shape.stroke()
             text.draw(in: pill.insetBy(dx: 10, dy: 4))
         }
     }

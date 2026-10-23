@@ -2,16 +2,6 @@ import AppKit
 import SwiftUI
 import LlassoKit
 
-extension Color {
-    static let llInk = Color(nsColor: Palette.ink)
-    static let llPaper = Color(nsColor: Palette.paper)
-    static let llAmber = Color(nsColor: Palette.amber)
-    static let llMuted = Color(nsColor: Palette.muted)
-    static let llLine = Color(nsColor: Palette.line)
-    static let llOK = Color(nsColor: Palette.ok)
-    static let llWell = Color(red: 0.094, green: 0.094, blue: 0.086)   // #181816
-}
-
 /// Reports a view's height so its panel can grow while keeping its top edge still.
 struct HeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
@@ -47,18 +37,65 @@ final class PillModel: ObservableObject {
     @Published var text = ""
     @Published var listening = false
     var holdingMic = false
-    /// Centre of the mic badge from the pill's top-left corner, measured once laid out.
-    @Published var micOffset = CGPoint(x: 32, y: 50.5)
+    /// Centre of the mic from the panel's top-left corner, measured once laid out.
+    @Published var micOffset = CGPoint(x: 54, y: 72.5)
     @Published var verb: Verb?
     /// 0...1 while the pause-to-send countdown runs, nil otherwise.
     @Published var pending: Double?
     @Published var typed = false
     @Published var notice: String?
 
+    /// The entry: threads unwind from the mic (0...1), the glass frosts in, then the text rises.
+    @Published var thread: Double = 1
+    @Published var glass: Double = 1
+    @Published var content: Double = 1
+    private var generation = 0
+
     var onSend: (() -> Void)?
     /// The mic badge pressed (true) or released (false).
     var onHold: ((Bool) -> Void)?
     var onCancel: (() -> Void)?
+
+    /// Run the entry: 0–180ms threads, 180–320ms glass, 320–420ms text.
+    func reveal() {
+        generation += 1
+        thread = 0; glass = 0; content = 0
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.18)) { self.thread = 1 }
+            withAnimation(.easeOut(duration: 0.14).delay(0.18)) { self.glass = 1 }
+            withAnimation(.easeOut(duration: 0.12).delay(0.30)) { self.content = 1 }
+        }
+    }
+
+    /// Run the entry backwards in 240ms, then `done` unless the prompt opened again meanwhile.
+    func conceal(_ done: @escaping () -> Void) {
+        generation += 1
+        let mine = generation
+        withAnimation(.easeIn(duration: 0.08)) { content = 0 }
+        withAnimation(.easeIn(duration: 0.1).delay(0.06)) { glass = 0 }
+        withAnimation(.easeIn(duration: 0.12).delay(0.12)) { thread = 0 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            if self?.generation == mine { done() }
+        }
+    }
+}
+
+/// One half of the prompt's outline, from the left edge at `startY` round to the right edge.
+struct HalfLoop: Shape {
+    var top: Bool
+    var startY: CGFloat
+    var radius: CGFloat = Glass.radius
+
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        let y = min(max(startY, rect.minY + radius), rect.maxY - radius)
+        let edgeY = top ? rect.minY : rect.maxY
+        p.move(to: CGPoint(x: rect.minX, y: y))
+        p.addArc(tangent1End: CGPoint(x: rect.minX, y: edgeY), tangent2End: CGPoint(x: rect.minX + radius, y: edgeY), radius: radius)
+        p.addArc(tangent1End: CGPoint(x: rect.maxX, y: edgeY), tangent2End: CGPoint(x: rect.maxX, y: y), radius: radius)
+        p.addLine(to: CGPoint(x: rect.maxX, y: y))
+        return p
+    }
 }
 
 struct PillView: View {
@@ -67,12 +104,12 @@ struct PillView: View {
     var onHeight: (CGFloat) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                Circle().fill(model.tagKnown ? Color.llOK : Color.llMuted).frame(width: 8, height: 8)
+                Circle().fill(model.tagKnown ? Color.llPositive : Color.llFaint).frame(width: 7, height: 7)
                 Text(model.tag)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundColor(Color(white: 0.73))
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundColor(.llGold)
                     .lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: 8)
             }
@@ -89,77 +126,93 @@ struct PillView: View {
                             model.micOffset = CGPoint(x: f.midX, y: f.midY)
                         }
                     })
-                TextField(model.listening ? "Listening… release to send" : "Type, or hold the mic to talk",
+                TextField(model.listening ? "Listening… release to send" : "Type, or hold the icon to talk",
                           text: $model.text, axis: .vertical)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 18))
-                    .foregroundColor(.llPaper)
+                    .font(.system(size: 17))
+                    .foregroundColor(.llText)
                     .lineLimit(1...5)
                     .focused($focused)
+                    .padding(.top, 4)
                     .onSubmit { model.onSend?() }
                     .onChange(of: model.text) { _, _ in
                         if focused { model.typed = true; model.pending = nil }
                     }
             }
             if let notice = model.notice {
-                Text(notice).font(.system(size: 13)).foregroundColor(.llAmber)
+                Text(notice).font(.system(size: 13)).foregroundColor(.llGold)
             }
             HStack(spacing: 8) {
                 ForEach(Verb.allCases, id: \.self) { verb in
                     Button { model.verb = model.verb == verb ? nil : verb } label: {
                         Text(verb.label)
                             .font(.system(size: 13, weight: model.verb == verb ? .semibold : .regular))
-                            .foregroundColor(model.verb == verb ? .llInk : Color(white: 0.73))
-                            .padding(.horizontal, 12).padding(.vertical, 7)
-                            .background(Capsule().fill(model.verb == verb ? Color.llPaper : Color.clear))
-                            .overlay(Capsule().stroke(model.verb == verb ? Color.clear : Color.llLine))
+                            .foregroundColor(model.verb == verb ? .llOnGold : .llSub)
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(Capsule().fill(model.verb == verb ? Color.llGold : Color.clear))
+                            .overlay(Capsule().stroke(model.verb == verb ? Color.clear : Color.llHair))
                     }
                     .buttonStyle(.plain)
                 }
                 Spacer()
                 if let pending = model.pending {
-                    ProgressView(value: pending).progressViewStyle(.linear).tint(.llAmber).frame(width: 72)
-                    Text("Sending · Esc").font(.system(size: 13)).foregroundColor(.llMuted)
+                    ProgressView(value: pending).progressViewStyle(.linear).tint(.llGold).frame(width: 72)
+                    Text("Sending · Esc").font(.system(size: 13)).foregroundColor(.llFaint)
                 } else {
                     Button { model.onSend?() } label: {
-                        Text("Send ↵").font(.system(size: 13, weight: .semibold)).foregroundColor(.llInk)
-                            .padding(.horizontal, 12).padding(.vertical, 7)
-                            .background(Capsule().fill(Color.llAmber))
+                        Text("Send ↵").font(.system(size: 13, weight: .semibold)).foregroundColor(.llOnGold)
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(Capsule().fill(Color.llGold))
                     }
                     .buttonStyle(.plain)
                 }
             }
         }
         .padding(.horizontal, 18).padding(.vertical, 16)
+        .opacity(model.content)
+        .offset(y: 4 * (1 - model.content))
         .frame(width: 560, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 16).fill(Color.llInk))
+        .overlay(threads)
+        .glass(amount: model.glass, edge: model.content)
         .reportsHeight(onHeight)
         .onAppear { if !model.listening { focused = true } }
         .onChange(of: model.listening) { _, listening in if !listening { focused = true } }
     }
+
+    /// The two dotted threads that unwind from the mic round the panel, fading as the hairline fuses.
+    private var threads: some View {
+        let startY = model.micOffset.y - Glass.margin
+        let style = StrokeStyle(lineWidth: 1, lineCap: .round, dash: [0.01, 4])
+        return ZStack {
+            HalfLoop(top: true, startY: startY).trim(from: 0, to: model.thread).stroke(Color.llDot, style: style)
+            HalfLoop(top: false, startY: startY).trim(from: 0, to: model.thread).stroke(Color.llDot, style: style)
+        }
+        .opacity(1 - model.content)
+        .allowsHitTesting(false)
+    }
 }
 
-/// Animation flag for the mic badge; an object because @State needs Xcode's macro plugins.
+/// Animation flag for the mic rings; an object because @State needs Xcode's macro plugins.
 final class Pulse: ObservableObject { @Published var on = false }
 
+/// The Llasso mark as the mic. While listening, dotted rings ripple out from it.
 struct MicBadge: View {
     var listening: Bool
     @ObservedObject private var pulse = Pulse()
 
     var body: some View {
         ZStack {
-            Circle().fill(listening ? Color.llAmber : Color.llLine)
-            HStack(spacing: 2) {
-                ForEach([6.0, 12.0, 9.0, 5.0], id: \.self) { h in
-                    RoundedRectangle(cornerRadius: 1.5)
-                        .fill(listening ? Color.llInk : Color.llMuted)
-                        .frame(width: 3, height: listening && pulse.on ? h : max(4, h * 0.5))
-                }
+            if listening {
+                Circle().stroke(Color.llDot, style: StrokeStyle(lineWidth: 1, lineCap: .round, dash: [0.01, 3.5]))
+                    .frame(width: 44, height: 44)
+                    .scaleEffect(pulse.on ? 1.15 : 0.9)
+                    .opacity(pulse.on ? 0.2 : 0.8)
             }
+            MarkShape().fill(Color.llGold).frame(width: 26, height: 15)
         }
-        .frame(width: 28, height: 28)
+        .frame(width: 30, height: 30)
         .onAppear {
-            withAnimation(.easeInOut(duration: 0.45).repeatForever(autoreverses: true)) { pulse.on = true }
+            withAnimation(.easeOut(duration: 0.9).repeatForever(autoreverses: false)) { pulse.on = true }
         }
     }
 }
@@ -228,9 +281,9 @@ struct CardView: View {
 
     private var dot: Color {
         switch model.state {
-        case .thinking, .streaming: return .llAmber
-        case .done: return .llOK
-        case .failed: return Color(red: 0.89, green: 0.40, blue: 0.36)
+        case .thinking, .streaming: return .llGold
+        case .done: return .llPositive
+        case .failed: return .llDanger
         }
     }
 
@@ -238,23 +291,23 @@ struct CardView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
                 Circle().fill(dot).frame(width: 8, height: 8)
-                Text(model.title).font(.system(size: 15, weight: .semibold)).foregroundColor(.llPaper)
+                Text(model.title).font(.system(size: 15, weight: .semibold)).foregroundColor(.llText)
                     .lineLimit(1).truncationMode(.tail)
                 Spacer(minLength: 8)
                 Button { model.onClose?() } label: {
-                    Image(systemName: "xmark").font(.system(size: 12, weight: .semibold)).foregroundColor(.llMuted)
+                    Image(systemName: "xmark").font(.system(size: 12, weight: .semibold)).foregroundColor(.llFaint)
                 }
                 .buttonStyle(.plain)
             }
             if model.state == .thinking {
-                Text("Looking at the box…").font(.system(size: 15)).foregroundColor(.llMuted)
+                Text("Looking at the box…").font(.system(size: 15)).foregroundColor(.llFaint)
             }
             if !model.answer.isEmpty {
                 ScrollView {
                     Text(rendered)
                         .font(.system(size: 15))
                         .lineSpacing(4)
-                        .foregroundColor(.llPaper)
+                        .foregroundColor(.llText)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -264,7 +317,7 @@ struct CardView: View {
             if !model.log.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(Array(model.log.suffix(6).enumerated()), id: \.offset) { _, line in
-                        Text(line).font(.system(size: 12, design: .monospaced)).foregroundColor(.llMuted)
+                        Text(line).font(.system(size: 12, design: .monospaced)).foregroundColor(.llFaint)
                             .lineLimit(1).truncationMode(.tail)
                     }
                 }
@@ -272,13 +325,13 @@ struct CardView: View {
             if let working = model.working {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text(working).font(.system(size: 14)).foregroundColor(.llMuted)
+                    Text(working).font(.system(size: 14)).foregroundColor(.llFaint)
                 }
             }
             if let p = model.proposal { proposalView(p) }
             if let q = model.question {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text(q.text).font(.system(size: 15, weight: .medium)).foregroundColor(.llPaper)
+                    Text(q.text).font(.system(size: 15, weight: .medium)).foregroundColor(.llText)
                     FlowRow(items: q.options) { option in
                         chip(option, primary: false) { model.onAnswer?(option) }
                     }
@@ -286,8 +339,8 @@ struct CardView: View {
             }
             if let step = model.step {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(step.title).font(.system(size: 14, weight: .semibold)).foregroundColor(.llAmber)
-                    Text(step.detail).font(.system(size: 12, design: .monospaced)).foregroundColor(Color(white: 0.73))
+                    Text(step.title).font(.system(size: 14, weight: .semibold)).foregroundColor(.llGold)
+                    Text(step.detail).font(.system(size: 12, design: .monospaced)).foregroundColor(.llSub)
                         .lineLimit(6).textSelection(.enabled)
                     HStack(spacing: 8) {
                         chip("Run", primary: true) { model.onStep?(true, false) }
@@ -299,14 +352,14 @@ struct CardView: View {
                 .background(RoundedRectangle(cornerRadius: 10).fill(Color.llWell))
             }
             if let error = model.error {
-                Text(error).font(.system(size: 14)).foregroundColor(Color(red: 0.95, green: 0.55, blue: 0.5))
+                Text(error).font(.system(size: 14)).foregroundColor(.llDanger)
                     .textSelection(.enabled)
             }
             if model.askingMore {
                 TextField("Ask more about the box", text: $model.followUp, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 15))
-                    .foregroundColor(.llPaper)
+                    .foregroundColor(.llText)
                     .lineLimit(1...4)
                     .padding(10)
                     .background(RoundedRectangle(cornerRadius: 10).fill(Color.llWell))
@@ -326,12 +379,12 @@ struct CardView: View {
                     }
                 }
                 Spacer()
-                Text("Esc closes").font(.system(size: 12)).foregroundColor(.llMuted)
+                Text("Esc closes").font(.system(size: 12)).foregroundColor(.llFaint)
             }
         }
         .padding(18)
         .frame(width: 520, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 16).fill(Color.llInk))
+        .glass()
         .reportsHeight(onHeight)
     }
 
@@ -339,15 +392,15 @@ struct CardView: View {
     private func proposalView(_ p: ProposalCard) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if !p.summary.isEmpty {
-                Text(p.summary).font(.system(size: 14, weight: .semibold)).foregroundColor(.llAmber)
+                Text(p.summary).font(.system(size: 14, weight: .semibold)).foregroundColor(.llGold)
             }
             if let original = p.original, !original.isEmpty {
-                Text(original).font(.system(size: 13)).strikethrough().foregroundColor(.llMuted)
+                Text(original).font(.system(size: 13)).strikethrough().foregroundColor(.llFaint)
                     .lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
             }
             if let text = p.text {
                 ScrollView {
-                    Text(text).font(.system(size: 14)).foregroundColor(.llPaper).textSelection(.enabled)
+                    Text(text).font(.system(size: 14)).foregroundColor(.llText).textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: 220).fixedSize(horizontal: false, vertical: true)
@@ -360,20 +413,20 @@ struct CardView: View {
                     .help("Click to open full size")
                 if p.done == nil {
                     Text("Not saved yet. Click the image to see it full size.")
-                        .font(.system(size: 11)).foregroundColor(.llMuted)
+                        .font(.system(size: 11)).foregroundColor(.llFaint)
                 }
             }
             if let rows = p.rows {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(rows.prefix(12).enumerated()), id: \.offset) { _, row in
                         Text(row.joined(separator: "   ")).font(.system(size: 12, design: .monospaced))
-                            .foregroundColor(.llPaper).lineLimit(1)
+                            .foregroundColor(.llText).lineLimit(1)
                     }
                 }
             }
             if let script = p.script {
                 ScrollView {
-                    Text(script).font(.system(size: 11, design: .monospaced)).foregroundColor(Color(white: 0.73))
+                    Text(script).font(.system(size: 11, design: .monospaced)).foregroundColor(.llSub)
                         .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: 140).fixedSize(horizontal: false, vertical: true)
@@ -381,11 +434,11 @@ struct CardView: View {
             if let files = p.files {
                 ForEach(Array(files.prefix(8).enumerated()), id: \.offset) { _, f in
                     HStack(spacing: 8) {
-                        Text(f.path).font(.system(size: 12, design: .monospaced)).foregroundColor(.llPaper).lineLimit(1)
+                        Text(f.path).font(.system(size: 12, design: .monospaced)).foregroundColor(.llText).lineLimit(1)
                         Spacer(minLength: 4)
-                        Text("+\(f.added)").font(.system(size: 12, design: .monospaced)).foregroundColor(.llOK)
+                        Text("+\(f.added)").font(.system(size: 12, design: .monospaced)).foregroundColor(.llPositive)
                         Text("−\(f.removed)").font(.system(size: 12, design: .monospaced))
-                            .foregroundColor(Color(red: 0.89, green: 0.40, blue: 0.36))
+                            .foregroundColor(.llDanger)
                     }
                 }
             }
@@ -402,7 +455,7 @@ struct CardView: View {
                 .frame(maxHeight: 200).fixedSize(horizontal: false, vertical: true)
             }
             if let done = p.done {
-                Text("✓ " + done).font(.system(size: 13)).foregroundColor(.llOK)
+                Text("✓ " + done).font(.system(size: 13)).foregroundColor(.llPositive)
             }
             FlowRow(items: p.destinations) { d in
                 chip(d.label, primary: d == p.destinations.first && p.done == nil) { model.onDestination?(d) }
@@ -420,11 +473,11 @@ struct CardView: View {
     }
 
     private func diffColour(_ line: Substring) -> Color {
-        if line.hasPrefix("+++") || line.hasPrefix("---") || line.hasPrefix("diff ") || line.hasPrefix("index ") { return .llMuted }
-        if line.hasPrefix("+") { return .llOK }
-        if line.hasPrefix("-") { return Color(red: 0.89, green: 0.40, blue: 0.36) }
-        if line.hasPrefix("@@") { return .llAmber }
-        return Color(white: 0.73)
+        if line.hasPrefix("+++") || line.hasPrefix("---") || line.hasPrefix("diff ") || line.hasPrefix("index ") { return .llFaint }
+        if line.hasPrefix("+") { return .llPositive }
+        if line.hasPrefix("-") { return .llDanger }
+        if line.hasPrefix("@@") { return .llGold }
+        return .llSub
     }
 
     private var rendered: AttributedString {
@@ -445,10 +498,10 @@ struct CardView: View {
         Button(action: action) {
             Text(label)
                 .font(.system(size: 13, weight: primary ? .semibold : .regular))
-                .foregroundColor(primary ? .llInk : Color(white: 0.73))
+                .foregroundColor(primary ? .llOnGold : .llSub)
                 .padding(.horizontal, 14).padding(.vertical, 8)
-                .background(Capsule().fill(primary ? Color.llPaper : Color.clear))
-                .overlay(Capsule().stroke(primary ? Color.clear : Color.llLine))
+                .background(Capsule().fill(primary ? Color.llGold : Color.clear))
+                .overlay(Capsule().stroke(primary ? Color.clear : Color.llHair))
         }
         .buttonStyle(.plain)
     }
@@ -502,15 +555,15 @@ enum Toast {
         let host = NSHostingView(rootView:
             Text(message)
                 .font(.system(size: 14, weight: .medium))
-                .foregroundColor(.llPaper)
+                .foregroundColor(.llText)
                 .padding(.horizontal, 18).padding(.vertical, 12)
-                .background(Capsule().fill(Color.llInk))
+                .glass(radius: 22)
                 .fixedSize())
         let size = host.fittingSize
         let p = FloatingPanel(size: size)
         p.contentView = host
         if let screen = NSScreen.main {
-            p.setFrameOrigin(CGPoint(x: screen.frame.midX - size.width / 2, y: screen.visibleFrame.maxY - size.height - 24))
+            p.setFrameOrigin(CGPoint(x: screen.frame.midX - size.width / 2, y: screen.visibleFrame.maxY - size.height - 24 + Glass.margin))
         }
         p.orderFrontRegardless()
         panel = p

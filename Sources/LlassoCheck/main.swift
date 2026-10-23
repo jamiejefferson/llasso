@@ -158,6 +158,13 @@ let imgJSON = #"{"choices":[{"message":{"images":[{"type":"image_url","image_url
 check("image parsed", OpenRouterClient.firstImage(inResponse: Data(imgJSON.utf8)) == Data([1, 2, 3]))
 
 // Live call, only with a key.
+// The Llasso mark parses to its drawn size, and fits a box without stretching.
+let markBounds = SVGPath.parse(LassoMark.pathData).boundingBoxOfPath
+check("mark parses to its size", abs(markBounds.width - 645.3) < 1 && abs(markBounds.height - 373) < 2)
+let fitted = LassoMark.path(in: CGRect(x: 0, y: 0, width: 30, height: 30)).boundingBoxOfPath
+check("mark fits a square box", abs(fitted.width - 30) < 0.2 && abs(fitted.height - 30 * 373 / 646) < 0.3 && abs(fitted.midY - 15) < 0.3)
+check("svg relative commands", SVGPath.parse("m10 10 h5 v5 l-5 0 z").boundingBoxOfPath == CGRect(x: 10, y: 10, width: 5, height: 5))
+
 if let key = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"], !key.isEmpty {
     let model = ProcessInfo.processInfo.environment["LLASSO_MODEL"] ?? "anthropic/claude-sonnet-5.5"
     let live = OpenRouterClient(apiKey: key)

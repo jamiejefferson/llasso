@@ -33,19 +33,24 @@ final class OverlayWindow: NSWindow {
     override var canBecomeMain: Bool { true }
 }
 
-/// Draws the dim, the amber box and its handles, and reports the drag.
+/// Draws the light dim and the gold thread while dragging, and reports the drag.
+/// Once a box is chosen, a LassoView holds it in focus while the prompt is open.
 final class SelectionView: NSView {
     enum Mode { case selecting, holding, outline }
 
     var mode: Mode = .selecting {
         didSet {
             window?.ignoresMouseEvents = mode == .outline
+            updateLasso()
             needsDisplay = true
         }
     }
     /// Selection in this view's coordinates.
     private(set) var selection: CGRect?
     private var anchor: CGPoint?
+    /// Where the pointer is while dragging: the bead of light leads from here.
+    private var head: CGPoint?
+    private var lasso: LassoView?
 
     var onPointerDown: (() -> Void)?
     /// Selection in view coordinates when the drag ends.
@@ -61,12 +66,30 @@ final class SelectionView: NSView {
     func clear() {
         selection = nil
         anchor = nil
+        head = nil
+        updateLasso()
         needsDisplay = true
     }
 
     func show(selection rect: CGRect) {
         selection = rect
+        updateLasso()
         needsDisplay = true
+    }
+
+    private func updateLasso() {
+        guard mode != .selecting, let selection else {
+            lasso?.removeFromSuperview()
+            lasso = nil
+            return
+        }
+        let frame = selection.insetBy(dx: -LassoView.margin, dy: -LassoView.margin)
+        if let lasso, lasso.frame == frame { return }
+        lasso?.removeFromSuperview()
+        let view = LassoView(frame: frame)
+        view.apply(.focused, animated: false)
+        addSubview(view)
+        lasso = view
     }
 
     override func mouseDown(with event: NSEvent) { dragBegan(at: convert(event.locationInWindow, from: nil)) }
@@ -79,6 +102,7 @@ final class SelectionView: NSView {
     func dragBegan(at point: CGPoint) {
         guard mode == .selecting else { return }
         anchor = point
+        head = point
         selection = nil
         onPointerDown?()
         needsDisplay = true
@@ -86,6 +110,7 @@ final class SelectionView: NSView {
 
     func dragMoved(to p: CGPoint) {
         guard mode == .selecting, let anchor else { return }
+        head = p
         selection = CGRect(x: min(anchor.x, p.x), y: min(anchor.y, p.y),
                            width: abs(p.x - anchor.x), height: abs(p.y - anchor.y))
         needsDisplay = true
@@ -94,6 +119,7 @@ final class SelectionView: NSView {
     func dragEnded() {
         guard mode == .selecting else { return }
         anchor = nil
+        head = nil
         guard let selection, selection.width >= 12, selection.height >= 12 else {
             // A click or a tiny drag: keep waiting for a real box.
             self.selection = nil
@@ -105,40 +131,59 @@ final class SelectionView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        if mode != .outline {
-            let dim = NSBezierPath(rect: bounds)
-            if let selection { dim.append(NSBezierPath(rect: selection)) }
-            dim.windingRule = .evenOdd
-            NSColor(white: 0.03, alpha: 0.30).setFill()
-            dim.fill()
-        }
-        guard let selection else {
-            if mode == .selecting { drawHint() }
+        guard mode == .selecting else {
+            // Nearly clear, so clicks still land here and Llasso can tell a click away.
+            NSColor(white: 0, alpha: 0.01).setFill()
+            bounds.fill()
             return
         }
-        let border = NSBezierPath(roundedRect: selection, xRadius: 6, yRadius: 6)
-        border.lineWidth = 2
-        if mode == .outline { border.setLineDash([6, 4], count: 2, phase: 0) }
-        Palette.amber.setStroke()
-        border.stroke()
-        Palette.amber.setFill()
-        for corner in [CGPoint(x: selection.minX, y: selection.maxY), CGPoint(x: selection.maxX, y: selection.minY)] {
-            NSBezierPath(roundedRect: CGRect(x: corner.x - 5, y: corner.y - 5, width: 10, height: 10),
-                         xRadius: 2, yRadius: 2).fill()
+        let dim = NSBezierPath(rect: bounds)
+        if let selection { dim.append(NSBezierPath(rect: selection)) }
+        dim.windingRule = .evenOdd
+        NSColor(white: 0.03, alpha: 0.18).setFill()
+        dim.fill()
+        guard let selection else {
+            drawHint()
+            return
         }
+        // The thread at full gold while you draw, with a bead of light at the pointer.
+        let thread = NSBezierPath(roundedRect: selection, xRadius: 8, yRadius: 8)
+        thread.lineWidth = 1
+        thread.lineCapStyle = .round
+        thread.setLineDash([0.01, LassoView.restingGap], count: 2, phase: 0)
+        NSGraphicsContext.saveGraphicsState()
+        NSAffineTransform(transform: AffineTransform(translationByX: 0.5, byY: -0.6)).concat()
+        NSColor(white: 0, alpha: 0.3).setStroke()
+        thread.stroke()
+        NSGraphicsContext.restoreGraphicsState()
+        Palette.gold.setStroke()
+        thread.stroke()
+        if let head { drawBead(at: head) }
+    }
+
+    private func drawBead(at p: CGPoint) {
+        let glow = NSGradient(colors: [Palette.glint.withAlphaComponent(0.7), Palette.glint.withAlphaComponent(0)])
+        glow?.draw(in: NSBezierPath(ovalIn: CGRect(x: p.x - 7, y: p.y - 7, width: 14, height: 14)), relativeCenterPosition: .zero)
+        Palette.glint.setFill()
+        NSBezierPath(ovalIn: CGRect(x: p.x - 1.5, y: p.y - 1.5, width: 3, height: 3)).fill()
     }
 
     private func drawHint() {
-        let text = "Drag a box round anything, and talk while you drag  ·  Esc to cancel"
+        let text = "Drag a box round anything  ·  Esc to cancel"
+        let dark = effectiveAppearance.isDark
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 15, weight: .medium),
-            .foregroundColor: Palette.paper,
+            .font: NSFont.systemFont(ofSize: 14, weight: .medium),
+            .foregroundColor: dark ? NSColor(white: 0.96, alpha: 1) : NSColor(white: 0.08, alpha: 1),
         ]
         let size = (text as NSString).size(withAttributes: attrs)
         let pill = CGRect(x: bounds.midX - size.width / 2 - 18, y: bounds.maxY - 120,
                           width: size.width + 36, height: size.height + 18)
-        Palette.ink.withAlphaComponent(0.92).setFill()
-        NSBezierPath(roundedRect: pill, xRadius: pill.height / 2, yRadius: pill.height / 2).fill()
+        let shape = NSBezierPath(roundedRect: pill, xRadius: pill.height / 2, yRadius: pill.height / 2)
+        (dark ? NSColor(white: 0.06, alpha: 0.82) : NSColor(white: 1, alpha: 0.9)).setFill()
+        shape.fill()
+        Palette.gold.withAlphaComponent(0.6).setStroke()
+        shape.lineWidth = 1
+        shape.stroke()
         (text as NSString).draw(at: CGPoint(x: pill.minX + 18, y: pill.minY + 9), withAttributes: attrs)
     }
 }
@@ -151,7 +196,8 @@ final class FloatingPanel: NSPanel {
                    styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         isOpaque = false
         backgroundColor = .clear
-        hasShadow = true
+        // The glass draws its own soft shadow or glow inside the window's margin.
+        hasShadow = false
         level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         isReleasedWhenClosed = false
@@ -165,12 +211,13 @@ final class FloatingPanel: NSPanel {
     /// otherwise above, otherwise inside its bottom edge. Kept on the box's screen.
     func place(near box: CGRect, on screen: NSScreen) {
         let size = frame.size
-        let visible = screen.visibleFrame
-        var origin = CGPoint(x: box.minX, y: box.minY - 16 - size.height)
+        let m = Glass.margin
+        let visible = screen.visibleFrame.insetBy(dx: -m, dy: -m)
+        var origin = CGPoint(x: box.minX - m, y: box.minY - 16 - size.height + m)
         if origin.y < visible.minY + 8 {
-            origin.y = box.maxY + 16
+            origin.y = box.maxY + 16 - m
             if origin.y + size.height > visible.maxY - 8 {
-                origin.y = box.minY + 16
+                origin.y = box.minY + 16 - m
             }
         }
         origin.x = min(max(origin.x, visible.minX + 8), visible.maxX - size.width - 8)
@@ -181,7 +228,7 @@ final class FloatingPanel: NSPanel {
     /// Place the panel so the point `offset` (from its top-left) lands on `point`, kept on screen.
     func place(_ offset: CGPoint, at point: CGPoint, on screen: NSScreen) {
         let size = frame.size
-        let visible = screen.visibleFrame
+        let visible = screen.visibleFrame.insetBy(dx: -Glass.margin, dy: -Glass.margin)
         var origin = CGPoint(x: point.x - offset.x, y: point.y + offset.y - size.height)
         origin.x = min(max(origin.x, visible.minX + 8), visible.maxX - size.width - 8)
         origin.y = min(max(origin.y, visible.minY + 8), visible.maxY - size.height - 8)
