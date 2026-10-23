@@ -154,7 +154,7 @@ final class LassoView: NSView {
         let gap = state == .focused ? Self.focusedGap : Self.restingGap
         let path = CGPath(roundedRect: boxRect, cornerWidth: 8, cornerHeight: 8, transform: nil)
         dust = Dust.scatter(along: path, gap: gap, dotSize: Self.dotSize, colour: Palette.gold,
-                            opacity: dots.opacity, drift: 20, duration: duration, into: host)
+                            opacity: dots.opacity, drift: 12, duration: duration, into: host)
         dots.opacity = 0
         shadowDots.opacity = 0
         halo.opacity = 0
@@ -181,7 +181,7 @@ enum Dust {
         return out
     }
 
-    /// Each dot flares, then sparkles away outward from the middle of the path, at a random moment
+    /// Each dot brightens a touch, then drifts away outward from the middle of the path, at a random moment
     /// within `duration`. `drift` is how far it travels.
     @discardableResult
     static func scatter(along path: CGPath, gap: CGFloat, dotSize: CGFloat, colour: NSColor, opacity: Float,
@@ -200,12 +200,12 @@ enum Dust {
             dot.backgroundColor = colour.cgColor
             dot.position = p
             dot.opacity = 0
-            // Every fifth dot glints as it goes.
-            if i % 5 == 0 {
+            // The odd dot catches the light as it goes.
+            if i % 12 == 0 {
                 dot.shadowColor = Palette.glint.cgColor
                 dot.shadowOffset = .zero
-                dot.shadowRadius = 2
-                dot.shadowOpacity = 1
+                dot.shadowRadius = 1.5
+                dot.shadowOpacity = 0.6
             }
             // Outward from the middle, give or take 20 degrees.
             let angle = atan2(p.y - centre.y, p.x - centre.x) + CGFloat.random(in: -0.35...0.35)
@@ -217,14 +217,14 @@ enum Dust {
             move.toValue = NSValue(point: end)
             move.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.8, 0.4, 1)
             let fade = CAKeyframeAnimation(keyPath: "opacity")
-            fade.values = [opacity, 1, 0]
-            fade.keyTimes = [0, 0.2, 1]
+            fade.values = [opacity, opacity, 0]
+            fade.keyTimes = [0, 0.15, 1]
             let flare = CAKeyframeAnimation(keyPath: "transform.scale")
-            flare.values = [1, 2.2, 0.3]
-            flare.keyTimes = [0, 0.2, 1]
+            flare.values = [1, 1.3, 0.5]
+            flare.keyTimes = [0, 0.15, 1]
             let shine = CAKeyframeAnimation(keyPath: "backgroundColor")
-            shine.values = [colour.cgColor, Palette.glint.cgColor, colour.cgColor]
-            shine.keyTimes = [0, 0.2, 1]
+            shine.values = [colour.cgColor, colour.blended(withFraction: 0.35, of: Palette.glint)?.cgColor ?? colour.cgColor, colour.cgColor]
+            shine.keyTimes = [0, 0.15, 1]
             let group = CAAnimationGroup()
             group.animations = [move, fade, flare, shine]
             group.duration = life

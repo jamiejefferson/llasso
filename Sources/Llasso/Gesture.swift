@@ -434,7 +434,7 @@ private final class OfferIcon: NSView {
         CATransaction.commit()
         let mark = LassoMark.path(in: CGRect(x: bounds.midX - 12, y: bounds.midY - 12, width: 24, height: 24))
         dust = Dust.scatter(along: mark, gap: 1.6, dotSize: 0.9, colour: Palette.gold, opacity: 0.8,
-                            drift: 12, duration: duration, into: host)
+                            drift: 7, duration: duration, into: host)
     }
 
     func restore() {
