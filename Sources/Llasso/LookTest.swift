@@ -42,6 +42,9 @@ extension SelfTest {
             try? await Task.sleep(nanoseconds: 300_000_000)
             await shoot(CGRect(x: box.minX - 40, y: box.minY - 330, width: 700, height: 320), "look-\(name)-5b-listening")
             Controller.shared.testListening(nil)
+            Controller.shared.testType("Can you take the key facts from this page, the price, the battery size, the weight and the charging time, and write them as a short list I can paste into my notes, then suggest two cheaper alternatives with the same output and say where to buy them in the UK, and finally tell me whether it will work with a trickle charger on a classic car battery over a long winter.")
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            await shoot(CGRect(x: box.minX - 40, y: box.minY - 480, width: 700, height: 470), "look-\(name)-5c-long")
             Controller.shared.cancel()
             try? await Task.sleep(nanoseconds: 400_000_000)
 

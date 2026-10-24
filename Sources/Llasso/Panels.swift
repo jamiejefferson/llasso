@@ -140,7 +140,8 @@ struct PillView: View {
                     .textFieldStyle(.plain)
                     .font(.system(size: 17))
                     .foregroundColor(.llText)
-                    .lineLimit(1...5)
+                    .lineLimit(1...10)
+                    .fixedSize(horizontal: false, vertical: true)
                     .focused($focused)
                     .padding(.top, 4)
                     .onSubmit { model.onSend?() }
@@ -181,6 +182,8 @@ struct PillView: View {
         .opacity(model.content)
         .offset(y: 4 * (1 - model.content))
         .frame(width: 560, alignment: .leading)
+        // Its own height, not the window's, so the prompt grows as the text wraps.
+        .fixedSize(horizontal: false, vertical: true)
         .overlay(threads)
         .glass(amount: model.glass, edge: model.content)
         .reportsHeight(onHeight)
@@ -397,7 +400,8 @@ struct CardView: View {
                     .textFieldStyle(.plain)
                     .font(.system(size: 15))
                     .foregroundColor(.llText)
-                    .lineLimit(1...4)
+                    .lineLimit(1...8)
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(10)
                     .background(RoundedRectangle(cornerRadius: 10).fill(Color.llWell))
                     .focused($focused)
@@ -421,6 +425,7 @@ struct CardView: View {
         }
         .padding(18)
         .frame(width: 520, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
         .glass()
         .reportsHeight(onHeight)
     }

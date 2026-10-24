@@ -240,6 +240,10 @@ struct Integration: Identifiable {
     var setup: String
     /// Tools never offered to the model, for privacy.
     var blocked: Set<String> = []
+    /// When set, only these tools are offered: fewer tools make each turn smaller and quicker.
+    var offered: Set<String>? = nil
+    /// Tools that only change what is on view (open, navigate, scroll), so they run without asking.
+    var safe: Set<String> = []
 
     func matches(bundleID: String?, appName: String?) -> Bool {
         if let b = bundleID, bundleIDs.contains(b) { return true }
@@ -288,7 +292,13 @@ final class Integrations: ObservableObject {
             name: "Hatch", bundleIDs: ["app.hatch.browser"], appNames: ["hatch"],
             transport: exe(hatch) ? .stdio(command: hatch, args: [], env: ["HATCH_AGENT": "llasso"]) : nil,
             setup: "Update Hatch to a build that includes hatch-mcp, then press Recheck.",
-            blocked: ["list_credentials", "fill_credentials"]))
+            blocked: ["list_credentials", "fill_credentials"],
+            offered: ["status", "finish_working", "list_hatches", "open_hatch", "select_hatch", "open_canvas",
+                      "select_canvas", "navigate", "reload", "go_back", "wait_for", "snapshot", "find", "screenshot",
+                      "get_element", "list_links", "save_image", "click", "fill", "select_option", "press_key",
+                      "hover", "scroll", "handle_dialog", "evaluate", "run_steps"],
+            safe: ["finish_working", "open_hatch", "select_hatch", "open_canvas", "select_canvas", "navigate",
+                   "reload", "go_back", "hover", "scroll"]))
         list.append(Integration(
             name: "Figma", bundleIDs: ["com.figma.Desktop"], appNames: ["figma"],
             transport: nil,
@@ -390,8 +400,8 @@ final class Integrations: ObservableObject {
     }
 
     /// The client's tools as OpenRouter tool definitions.
-    func toolSchemas(_ c: MCPClient, blocked: Set<String>) -> [[String: Any]] {
-        c.tools.filter { !blocked.contains($0.name) }.map { t in
+    func toolSchemas(_ c: MCPClient, blocked: Set<String>, offered: Set<String>? = nil) -> [[String: Any]] {
+        c.tools.filter { !blocked.contains($0.name) && (offered?.contains($0.name) ?? true) }.map { t in
             ["type": "function",
              "function": ["name": ToolName.qualified(server: c.name, tool: t.name),
                           "description": String(t.description.prefix(1000)),

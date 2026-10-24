@@ -104,12 +104,15 @@ final class Controller {
     }
 
     /// For the self-test: start a job without the prompt.
-    func startTestJob(box: (rect: CGRect, screen: NSScreen), context: ScreenContext, prompt: String, crop: Data) -> Job {
-        let job = Job(frontApp: nil, box: box, verb: nil, context: context, integration: nil, speaker: speaker)
+    func startTestJob(box: (rect: CGRect, screen: NSScreen), context: ScreenContext, prompt: String, crop: Data,
+                      integration: Integration? = nil, approveAll: Bool = false) -> Job {
+        let job = Job(frontApp: nil, box: box, verb: nil, context: context, integration: integration, speaker: speaker)
+        if approveAll { job.approveAllForTest() }
         job.onClose = { [weak self] j in self?.jobs.removeAll { $0 === j } }
         jobs.append(job)
         let capture = Task<Capture?, Never> { Capture(crop: crop, screen: crop) }
-        Task { await job.start(prompt: prompt, spoken: false, captureTask: capture, mcpTask: nil) }
+        let mcp: Task<MCPClient?, Never>? = integration.map { i in Task { await Integrations.shared.client(for: i) } }
+        Task { await job.start(prompt: prompt, spoken: false, captureTask: capture, mcpTask: mcp) }
         return job
     }
 
@@ -128,6 +131,9 @@ final class Controller {
         pill.level = level ?? 0
         if level != nil { pill.text = "make the sky a warm amber" }
     }
+
+    /// For the look test: type into the prompt.
+    func testType(_ text: String) { pill.typed = true; pill.text = text }
 
     /// For the self-test: lay the prompt out and report its mic's offset.
     func measurePill() async -> CGPoint {

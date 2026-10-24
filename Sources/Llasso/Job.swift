@@ -98,6 +98,7 @@ final class Job {
     var appName: String { context.appName ?? "" }
     var isVisible: Bool { cardPanel?.isVisible ?? false }
     var cardFrame: CGRect? { cardPanel?.frame }
+    func approveAllForTest() { approveAll = true }
 
     func contains(_ point: CGPoint) -> Bool { cardPanel.map { $0.isVisible && $0.frame.contains(point) } ?? false }
     func owns(_ window: NSWindow?) -> Bool { window != nil && window === cardPanel }
@@ -138,6 +139,9 @@ final class Job {
         hide()
         onClose?(self)
     }
+
+    static let toolImagesNote = "Images returned by the tool calls above."
+    static let staleImages = "(Screenshots from an earlier step were here; the newest ones are further on.)"
 
     /// The card comes up by itself when the job finishes, so this only keeps the chips current.
     private func finished() { WorkingDock.shared.refresh() }
@@ -208,10 +212,12 @@ final class Job {
         let model = settings.model
         let speak = spoken && settings.voiceOut != .off
         var tools = BuiltinTool.available(for: context.kind, hasSource: context.source != nil).map(\.schema)
-        if let mcp, let integration { tools += Integrations.shared.toolSchemas(mcp, blocked: integration.blocked) }
+        if let mcp, let integration { tools += Integrations.shared.toolSchemas(mcp, blocked: integration.blocked, offered: integration.offered) }
         var shown = ""
         do {
-            for _ in 0..<16 {
+            // Browsing a page can take many small steps: scroll, read, scroll again.
+            for step in 0..<30 {
+                let turnStart = Date()
                 var sentences = SentenceBuffer()
                 var text = ""
                 var calls: [ToolCall] = []
@@ -231,21 +237,27 @@ final class Job {
                 if speak, !Task.isCancelled, let rest = sentences.flush() { speaker.say(rest) }
                 if !text.isEmpty { shown = prefix + text }
                 messages.append(.assistant(text, calls: calls))
+                Log.write("turn \(step + 1): \(String(format: "%.1f", Date().timeIntervalSince(turnStart)))s, \(calls.count) call(s), \(messages.count) messages")
                 if calls.isEmpty { break }
 
                 var images: [Data] = []
                 var stop = false
                 for call in calls {
                     if Task.isCancelled { return }
-                    Log.write("tool: \(call.name)")
+                    let toolStart = Date()
                     let outcome = await handle(call)
+                    Log.write("tool: \(call.name) \(String(format: "%.1f", Date().timeIntervalSince(toolStart)))s")
                     messages.append(.toolResult(id: call.id, outcome.text))
                     images += outcome.images
                     if outcome.endsTurn { stop = true }
                 }
                 if !images.isEmpty {
+                    // Only the newest screenshots stay: older ones are stale and slow every later step.
+                    for i in messages.indices where messages[i].role == "user" && messages[i].isToolImages {
+                        messages[i] = .user(Self.staleImages)
+                    }
                     messages.append(ChatMessage(role: "user", parts: images.prefix(3).map { .png($0) }
-                        + [.text("Images returned by the tool calls above.")]))
+                        + [.text(Self.toolImagesNote)]))
                 }
                 if stop { break }
                 card.state = .thinking
@@ -303,7 +315,7 @@ final class Job {
             return Outcome(text: "There is no tool called \(call.name).")
         }
         let why = (args.removeValue(forKey: Integrations.why) as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !spec.readOnly && !approveAll {
+        if !spec.readOnly && !(integration?.safe.contains(tool) ?? false) && !approveAll {
             let title = why.flatMap { $0.isEmpty ? nil : $0 } ?? "\(mcp.name) wants to \(tool.replacingOccurrences(of: "_", with: " "))"
             card.step = (title, "\(mcp.name) · \(tool.replacingOccurrences(of: "_", with: " "))\n" + Self.brief(args))
             card.stepDetailOpen = false
@@ -566,4 +578,11 @@ final class Job {
         finished()
     }
 
+}
+
+extension ChatMessage {
+    /// A user message carrying screenshots that tools returned.
+    var isToolImages: Bool {
+        parts.contains { if case .text(let t) = $0 { return t == Job.toolImagesNote }; return false }
+    }
 }

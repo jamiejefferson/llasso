@@ -209,13 +209,34 @@ public struct OpenRouterClient: Sendable {
 
     public func chatRequest(model: String, messages: [ChatMessage], stream: Bool,
                             tools: [[String: Any]] = []) throws -> URLRequest {
+        var json = messages.map(\.json)
+        if model.hasPrefix("anthropic/") { Self.markCache(&json) }
         var body: [String: Any] = [
             "model": model,
             "stream": stream,
-            "messages": messages.map(\.json),
+            "messages": json,
         ]
         if !tools.isEmpty { body["tools"] = tools }
         return try request(path: "chat/completions", body: body)
+    }
+
+    /// Anthropic models cache what comes before a marked part. Marking the first user message
+    /// (the screenshots) and the newest message means each step of a job re-reads the tools, the
+    /// images and the steps so far from the cache, and only the newest part is processed afresh.
+    static func markCache(_ messages: inout [[String: Any]]) {
+        var marks: [Int] = []
+        if let first = messages.firstIndex(where: { $0["role"] as? String == "user" }) { marks.append(first) }
+        if let last = messages.indices.last, !marks.contains(last),
+           ["user", "tool"].contains(messages[last]["role"] as? String ?? "") { marks.append(last) }
+        let cache: [String: Any] = ["type": "ephemeral"]
+        for i in marks {
+            if let text = messages[i]["content"] as? String {
+                messages[i]["content"] = [["type": "text", "text": text, "cache_control": cache]]
+            } else if var parts = messages[i]["content"] as? [[String: Any]], !parts.isEmpty {
+                parts[parts.count - 1]["cache_control"] = cache
+                messages[i]["content"] = parts
+            }
+        }
     }
 
     /// Stream an answer that may end in tool calls: text pieces as they arrive, then

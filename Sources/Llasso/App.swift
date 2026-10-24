@@ -127,6 +127,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--flowtest") {
             Task { @MainActor in await SelfTest.flow(); NSApp.terminate(nil) }
         }
+        if CommandLine.arguments.contains("--hatchtest") {
+            Task { @MainActor in await SelfTest.hatch(); NSApp.terminate(nil) }
+        }
         if CommandLine.arguments.contains("--namedtest") {
             Task { @MainActor in await SelfTest.named(); NSApp.terminate(nil) }
         }
@@ -874,15 +877,53 @@ enum SelfTest {
             var ctx = page
             ctx.integration = "Hatch"
             let calls = await firstCalls("open this link in a new hatch", ctx,
-                                         extra: Integrations.shared.toolSchemas(mcp, blocked: hatch.blocked))
+                                         extra: Integrations.shared.toolSchemas(mcp, blocked: hatch.blocked, offered: hatch.offered))
             r["hatch.firstCalls"] = calls.map(\.name)
             r["hatch.why"] = calls.compactMap { $0.args[Integrations.why] as? String }
         } else {
             r["hatch"] = "not connected"
         }
+        if let paper = Integrations.shared.integration(bundleID: "com.todesktop.2601167vjw8xe", appName: "Paper"),
+           let mcp = await Integrations.shared.client(for: paper) {
+            var ctx = ScreenContext(appName: "Paper", bundleID: "com.todesktop.2601167vjw8xe")
+            ctx.integration = "Paper"
+            // Reads run first, so give the model one turn that has to write.
+            let calls = await firstCalls("Change the heading text in the selected frame to say Hello JJ. Its node id is 1-0 and you have already read it.", ctx,
+                                         extra: Integrations.shared.toolSchemas(mcp, blocked: paper.blocked, offered: paper.offered))
+            r["paper.firstCalls"] = calls.map(\.name)
+            r["paper.why"] = calls.compactMap { $0.args[Integrations.why] as? String }
+        }
         Integrations.shared.stopAll()
         if let data = try? JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: History.folder.appendingPathComponent("flowtest.json"))
+        }
+    }
+
+    /// A Hatch task that needs scrolling: open a long page and read a section near the bottom.
+    /// Steps run without asking. Writes hatchtest.json with the answer and the time taken.
+    static func hatch() async {
+        var r: [String: Any] = [:]
+        guard let screen = NSScreen.main,
+              let hatch = Integrations.shared.integration(bundleID: "app.hatch.browser", appName: "Hatch") else { return }
+        let f = screen.visibleFrame
+        var ctx = ScreenContext(appName: "Hatch", bundleID: "app.hatch.browser", url: "https://en.wikipedia.org/wiki/Main_Page")
+        ctx.integration = "Hatch"
+        let crop = (try? Capture.png(buttonImage())) ?? Data()
+        let start = Date()
+        let job = Controller.shared.startTestJob(
+            box: (CGRect(x: f.minX + 100, y: f.maxY - 300, width: 300, height: 140), screen), context: ctx,
+            prompt: "Open https://en.wikipedia.org/wiki/Aston_Martin in a new hatch, then tell me the name of the last section before References and one fact from it.",
+            crop: crop, integration: hatch, approveAll: true)
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        for _ in 0..<480 where job.isRunning { try? await Task.sleep(nanoseconds: 500_000_000) }
+        r["seconds"] = Int(Date().timeIntervalSince(start))
+        r["answer"] = job.card.answer
+        r["error"] = job.card.error ?? ""
+        r["log"] = job.card.log
+        job.close()
+        Integrations.shared.stopAll()
+        if let data = try? JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: History.folder.appendingPathComponent("hatchtest.json"))
         }
     }
 

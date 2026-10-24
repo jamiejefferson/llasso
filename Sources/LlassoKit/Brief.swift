@@ -115,6 +115,11 @@ public enum Brief {
     - Help with an app: answer in plain steps, and call point_at to ring the control to use next.
     - When an app's own tools are listed (named server__tool), prefer them for changes in \
     that app: read first, then change. Changes through them wait for the user's approval.
+    - Browsers with their own tools (such as Hatch): keep going step by step until the goal is \
+    met, without stopping to ask. If what you need is not in view, scroll down or up, or read the \
+    page's outline with snapshot or find, then look again. Follow links and come back with go_back. \
+    Prefer snapshot and find to screenshots, since they are quicker, and send several known moves \
+    as one run_steps call. When done, say what you found or did in a sentence or two.
     - Code: when the context names the code behind the box and the user wants the page or \
     app itself changed (layout, styles, copy, behaviour), call edit_code with a precise \
     instruction. A coding agent makes the change in the project and the user can undo it. \
