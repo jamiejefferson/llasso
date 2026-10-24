@@ -286,7 +286,16 @@ final class Integrations: ObservableObject {
         list.append(Integration(
             name: "Paper", bundleIDs: ["com.todesktop.2601167vjw8xe"], appNames: ["paper"],
             transport: exe(paper) ? .stdio(command: paper, args: ["mcp"], env: [:]) : nil,
-            setup: "Install Paper's command-line tool from Paper's settings so ~/.paper/bin/paper exists, then press Recheck."))
+            setup: "Install Paper's command-line tool from Paper's settings so ~/.paper/bin/paper exists, then press Recheck.",
+            // File and page management, comments and exports are left out: a request works on the open design.
+            offered: ["get_guide", "get_basic_info", "get_selection", "get_node_info", "get_children", "get_tree_summary",
+                      "get_screenshot", "get_jsx", "get_computed_styles", "get_fill_image", "find_nodes",
+                      "get_font_family_info", "get_tokens", "write_html", "create_artboard", "duplicate_nodes",
+                      "update_styles", "set_text_content", "rename_nodes", "move_nodes", "delete_nodes",
+                      "finish_working_on_nodes"],
+            // Edits Paper can undo run without asking; deleting still asks.
+            safe: ["write_html", "create_artboard", "duplicate_nodes", "update_styles", "set_text_content",
+                   "rename_nodes", "move_nodes"]))
         let hatch = "/Applications/Hatch.app/Contents/Resources/hatch-mcp"
         list.append(Integration(
             name: "Hatch", bundleIDs: ["app.hatch.browser"], appNames: ["hatch"],
