@@ -106,7 +106,7 @@ public enum BuiltinTool: String, CaseIterable, Sendable {
             return fn("Propose new or rewritten text. Llasso shows it and lets the user put it back in place, copy it, or open it in a new document. Give the complete replacement text, not a diff.",
                       ["text": ["type": "string"], "summary": summary], ["text", "summary"])
         case .editImage:
-            return fn("Edit the image in the box with an image model. Write the instruction for the image model. Llasso shows the result and lets the user place it back, copy it or save it.",
+            return fn("Make an image with an image model, starting from what is in the box: edit the boxed image, or create a new image, illustration, drawing or variation of what the box shows. Write the full instruction for the image model, including style. Llasso shows the image on the card and lets the user save it, copy it or replace the source image.",
                       ["instruction": ["type": "string"], "summary": summary], ["instruction", "summary"])
         case .setCells:
             return fn("Write values or formulas into the spreadsheet. Rows are lists of cell strings; a string starting with = is a formula. The user confirms before anything is written.",

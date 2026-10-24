@@ -124,6 +124,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--clicktest") {
             Task { @MainActor in await SelfTest.click(); NSApp.terminate(nil) }
         }
+        if CommandLine.arguments.contains("--flowtest") {
+            Task { @MainActor in await SelfTest.flow(); NSApp.terminate(nil) }
+        }
         if CommandLine.arguments.contains("--namedtest") {
             Task { @MainActor in await SelfTest.named(); NSApp.terminate(nil) }
         }
@@ -735,6 +738,10 @@ enum SelfTest {
                                                context: ctx, prompt: "Name the colour of the button in one word.", crop: crop)
         try? await Task.sleep(nanoseconds: 400_000_000)
         r["a.visibleAtStart"] = a.isVisible
+        r["dock.chipsAtStart"] = WorkingDock.shared.jobs.count
+        for _ in 0..<60 where !a.isVisible { try? await Task.sleep(nanoseconds: 250_000_000) }
+        r["a.cameUpWithAnswer"] = a.isVisible
+        r["a.cardAtRightEdge"] = Int((NSScreen.main?.visibleFrame.maxX ?? 0) - (a.cardFrame?.maxX ?? 0))
         r["jobsRunning"] = Controller.shared.jobs.filter(\.isRunning).count
         // A click on the desktop, away from both cards: the cards hide, the work goes on.
         let click = CGPoint(x: f.midX, y: f.minY + 40)
@@ -812,6 +819,70 @@ enum SelfTest {
         job.close()
         if let data = try? JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: History.folder.appendingPathComponent("clicktest.json"))
+        }
+    }
+
+    /// Voice: how soon the mic comes on, and a spoken sentence read back from a file. Model:
+    /// an illustration request goes to edit_image, and a Hatch step carries a plain-words reason.
+    /// Writes flowtest.json.
+    static func flow() async {
+        var r: [String: Any] = [:]
+        let voice = VoiceInput()
+        _ = await voice.prepare()
+        // The menu bar right after preparing: the orange mic dot must not show yet.
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        let shot = Process()
+        shot.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        let w = Int(NSScreen.main?.frame.width ?? 1440)
+        shot.arguments = ["-x", "-R", "\(w - 500),0,500,30", History.folder.appendingPathComponent("menubar-prepared.png").path]
+        try? shot.run(); shot.waitUntilExit()
+        let t0 = Date()
+        do { try await voice.start() } catch { r["voice.startError"] = error.localizedDescription }
+        r["voice.startMs"] = Int(Date().timeIntervalSince(t0) * 1000)
+        r["voice.running"] = voice.isRunning
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        let shot2 = Process()
+        shot2.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        shot2.arguments = ["-x", "-R", "\(w - 500),0,500,30", History.folder.appendingPathComponent("menubar-listening.png").path]
+        try? shot2.run(); shot2.waitUntilExit()
+        voice.abandon()
+        let aiff = FileManager.default.temporaryDirectory.appendingPathComponent("llasso-voice.aiff")
+        let say = Process()
+        say.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+        say.arguments = ["-v", "Daniel", "-o", aiff.path, "Open this link in a new Hatch window, then make the button in Paper bigger."]
+        try? say.run(); say.waitUntilExit()
+        r["voice.heard"] = (try? await voice.transcribe(file: aiff)) ?? "error"
+
+        func firstCalls(_ prompt: String, _ ctx: ScreenContext, extra: [[String: Any]] = []) async -> [ToolCall] {
+            let crop = (try? Capture.png(buttonImage())) ?? Data()
+            var calls: [ToolCall] = []
+            do {
+                for try await chunk in Settings.shared.client.streamTurn(
+                    model: Settings.shared.model,
+                    messages: Brief.firstMessages(prompt: prompt, verb: nil, context: ctx, crop: crop, screen: nil,
+                                                  spoken: false, appGuides: []),
+                    tools: BuiltinTool.available(for: ctx.kind).map(\.schema) + extra) {
+                    if case .tools(let c) = chunk { calls = c }
+                }
+            } catch { r["modelError"] = error.localizedDescription }
+            return calls
+        }
+        let page = ScreenContext(appName: "Hatch", bundleID: "app.hatch.browser", url: "https://example.com/cars")
+        r["image.firstCalls"] = await firstCalls("give me a large mono stylised illustration of this car", page).map(\.name)
+        if let hatch = Integrations.shared.integration(bundleID: "app.hatch.browser", appName: "Hatch"),
+           let mcp = await Integrations.shared.client(for: hatch) {
+            var ctx = page
+            ctx.integration = "Hatch"
+            let calls = await firstCalls("open this link in a new hatch", ctx,
+                                         extra: Integrations.shared.toolSchemas(mcp, blocked: hatch.blocked))
+            r["hatch.firstCalls"] = calls.map(\.name)
+            r["hatch.why"] = calls.compactMap { $0.args[Integrations.why] as? String }
+        } else {
+            r["hatch"] = "not connected"
+        }
+        Integrations.shared.stopAll()
+        if let data = try? JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: History.folder.appendingPathComponent("flowtest.json"))
         }
     }
 

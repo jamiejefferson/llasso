@@ -36,6 +36,8 @@ final class PillModel: ObservableObject {
     @Published var tagKnown = false
     @Published var text = ""
     @Published var listening = false
+    /// The mic level while listening, 0...1.
+    @Published var level: Double = 0
     var holdingMic = false
     /// Centre of the mic from the panel's top-left corner, measured once laid out.
     @Published var micOffset = CGPoint(x: 54, y: 72.5)
@@ -106,13 +108,20 @@ struct PillView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                Circle().fill(model.tagKnown ? Color.llPositive : Color.llFaint).frame(width: 7, height: 7)
-                Text(model.tag)
-                    .font(.system(size: 11.5, design: .monospaced))
-                    .foregroundColor(.llGold)
-                    .lineLimit(1).truncationMode(.middle)
+                if model.listening {
+                    // Listening replaces the app line, so it is plain the mic hears you.
+                    LevelBars(level: model.level)
+                    Text("Listening · release to send").font(.system(size: 12.5, weight: .medium)).foregroundColor(.llText)
+                } else {
+                    Circle().fill(model.tagKnown ? Color.llPositive : Color.llFaint).frame(width: 7, height: 7)
+                    Text(model.tag)
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .foregroundColor(.llSub)
+                        .lineLimit(1).truncationMode(.middle)
+                }
                 Spacer(minLength: 8)
             }
+            .frame(height: 16)
             HStack(alignment: .top, spacing: 12) {
                 MicBadge(listening: model.listening)
                     .contentShape(Circle())
@@ -140,29 +149,29 @@ struct PillView: View {
                     }
             }
             if let notice = model.notice {
-                Text(notice).font(.system(size: 13)).foregroundColor(.llGold)
+                Text(notice).font(.system(size: 13)).foregroundColor(.llSub)
             }
             HStack(spacing: 8) {
                 ForEach(Verb.allCases, id: \.self) { verb in
                     Button { model.verb = model.verb == verb ? nil : verb } label: {
                         Text(verb.label)
                             .font(.system(size: 13, weight: model.verb == verb ? .semibold : .regular))
-                            .foregroundColor(model.verb == verb ? .llOnGold : .llSub)
+                            .foregroundColor(model.verb == verb ? .llOnInk : .llSub)
                             .padding(.horizontal, 12).padding(.vertical, 6)
-                            .background(Capsule().fill(model.verb == verb ? Color.llGold : Color.clear))
+                            .background(Capsule().fill(model.verb == verb ? Color.llInk : Color.clear))
                             .overlay(Capsule().stroke(model.verb == verb ? Color.clear : Color.llHair))
                     }
                     .buttonStyle(.plain)
                 }
                 Spacer()
                 if let pending = model.pending {
-                    ProgressView(value: pending).progressViewStyle(.linear).tint(.llGold).frame(width: 72)
+                    ProgressView(value: pending).progressViewStyle(.linear).tint(.llInk).frame(width: 72)
                     Text("Sending · Esc").font(.system(size: 13)).foregroundColor(.llFaint)
                 } else {
                     Button { model.onSend?() } label: {
-                        Text("Send ↵").font(.system(size: 13, weight: .semibold)).foregroundColor(.llOnGold)
+                        Text("Send ↵").font(.system(size: 13, weight: .semibold)).foregroundColor(.llOnInk)
                             .padding(.horizontal, 12).padding(.vertical, 6)
-                            .background(Capsule().fill(Color.llGold))
+                            .background(Capsule().fill(Color.llInk))
                     }
                     .buttonStyle(.plain)
                 }
@@ -189,6 +198,23 @@ struct PillView: View {
         }
         .opacity(1 - model.content)
         .allowsHitTesting(false)
+    }
+}
+
+/// Five bars that follow the mic level, so it is plain the mic hears you.
+struct LevelBars: View {
+    var level: Double
+    private static let shape: [Double] = [0.45, 0.8, 1, 0.7, 0.5]
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 2) {
+            ForEach(0..<5, id: \.self) { i in
+                Capsule().fill(Color.llDot)
+                    .frame(width: 3, height: 3 + 13 * max(0.08, level * Self.shape[i]))
+            }
+        }
+        .frame(height: 16)
+        .animation(.easeOut(duration: 0.08), value: level)
     }
 }
 
@@ -236,6 +262,8 @@ final class CardModel: ObservableObject {
     @Published var question: (text: String, options: [String])?
     /// An app change through its MCP server, waiting for approval.
     @Published var step: (title: String, detail: String)?
+    /// The step's tool and arguments, shown only when asked for.
+    @Published var stepDetailOpen = false
     /// One line per tool that has run in this job.
     @Published var log: [String] = []
     /// A slow piece of work in progress ("Editing the image…").
@@ -341,9 +369,16 @@ struct CardView: View {
             }
             if let step = model.step {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(step.title).font(.system(size: 14, weight: .semibold)).foregroundColor(.llGold)
-                    Text(step.detail).font(.system(size: 12, design: .monospaced)).foregroundColor(.llSub)
-                        .lineLimit(6).textSelection(.enabled)
+                    Text(step.title).font(.system(size: 14, weight: .semibold)).foregroundColor(.llText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button { model.stepDetailOpen.toggle() } label: {
+                        Text(model.stepDetailOpen ? "Hide details" : "Details").font(.system(size: 12)).foregroundColor(.llFaint)
+                    }
+                    .buttonStyle(.plain)
+                    if model.stepDetailOpen {
+                        Text(step.detail).font(.system(size: 12, design: .monospaced)).foregroundColor(.llSub)
+                            .lineLimit(8).textSelection(.enabled)
+                    }
                     HStack(spacing: 8) {
                         chip("Run", primary: true) { model.onStep?(true, false) }
                         chip("Run all", primary: false) { model.onStep?(true, true) }
@@ -394,7 +429,7 @@ struct CardView: View {
     private func proposalView(_ p: ProposalCard) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if !p.summary.isEmpty {
-                Text(p.summary).font(.system(size: 14, weight: .semibold)).foregroundColor(.llGold)
+                Text(p.summary).font(.system(size: 14, weight: .semibold)).foregroundColor(.llText)
             }
             if let original = p.original, !original.isEmpty {
                 Text(original).font(.system(size: 13)).strikethrough().foregroundColor(.llFaint)
@@ -481,7 +516,7 @@ struct CardView: View {
         if line.hasPrefix("+++") || line.hasPrefix("---") || line.hasPrefix("diff ") || line.hasPrefix("index ") { return .llFaint }
         if line.hasPrefix("+") { return .llPositive }
         if line.hasPrefix("-") { return .llDanger }
-        if line.hasPrefix("@@") { return .llGold }
+        if line.hasPrefix("@@") { return .llFaint }
         return .llSub
     }
 
@@ -503,9 +538,9 @@ struct CardView: View {
         Button(action: action) {
             Text(label)
                 .font(.system(size: 13, weight: primary ? .semibold : .regular))
-                .foregroundColor(primary ? .llOnGold : .llSub)
+                .foregroundColor(primary ? .llOnInk : .llSub)
                 .padding(.horizontal, 14).padding(.vertical, 8)
-                .background(Capsule().fill(primary ? Color.llGold : Color.clear))
+                .background(Capsule().fill(primary ? Color.llInk : Color.clear))
                 .overlay(Capsule().stroke(primary ? Color.clear : Color.llHair))
         }
         .buttonStyle(.plain)

@@ -146,18 +146,15 @@ final class SelectionView: NSView {
             drawHint()
             return
         }
-        // The thread at full gold while you draw, with a bead of light at the pointer.
-        let thread = NSBezierPath(roundedRect: selection, xRadius: 8, yRadius: 8)
-        thread.lineWidth = LassoView.dotSize
-        thread.lineCapStyle = .round
-        thread.setLineDash([0.01, LassoView.restingGap], count: 2, phase: 0)
-        NSGraphicsContext.saveGraphicsState()
-        NSAffineTransform(transform: AffineTransform(translationByX: 0.5, byY: -0.6)).concat()
-        NSColor(white: 0, alpha: 0.4).setStroke()
-        thread.stroke()
-        NSGraphicsContext.restoreGraphicsState()
+        // The marquee while you draw: gold dashes over a dark line, like the one it becomes.
+        let rect = selection.insetBy(dx: 0.5, dy: 0.5)
+        let line = NSBezierPath(roundedRect: rect, xRadius: LassoView.corner, yRadius: LassoView.corner)
+        line.lineWidth = LassoView.lineWidth
+        NSColor(white: 0, alpha: 0.6).setStroke()
+        line.stroke()
+        line.setLineDash([LassoView.dash, LassoView.dash], count: 2, phase: 0)
         Palette.gold.setStroke()
-        thread.stroke()
+        line.stroke()
         if let head { drawBead(at: head) }
     }
 
@@ -181,8 +178,8 @@ final class SelectionView: NSView {
         let shape = NSBezierPath(roundedRect: pill, xRadius: pill.height / 2, yRadius: pill.height / 2)
         (dark ? NSColor(white: 0.06, alpha: 0.82) : NSColor(white: 1, alpha: 0.9)).setFill()
         shape.fill()
-        Palette.gold.withAlphaComponent(0.6).setStroke()
-        shape.lineWidth = 1
+        (dark ? NSColor(white: 1, alpha: 0.16) : NSColor(white: 0, alpha: 0.1)).setStroke()
+        shape.lineWidth = 0.5
         shape.stroke()
         (text as NSString).draw(at: CGPoint(x: pill.minX + 18, y: pill.minY + 9), withAttributes: attrs)
     }

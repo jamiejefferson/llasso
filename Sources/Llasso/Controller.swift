@@ -60,6 +60,7 @@ final class Controller {
         }
         speaker.onError = { message in Toast.show("Voice: " + message) }
         installJobClickMonitors()
+        voice.onLevel = { [weak self] level in self?.pill.level = level }
         voice.onUpdate = { [weak self] text in
             guard let self, self.phase == .selecting || self.phase == .prompting, !self.pill.typed else { return }
             if text != self.pill.text {
@@ -119,6 +120,13 @@ final class Controller {
         job.onClose = { [weak self] j in self?.jobs.removeAll { $0 === j } }
         jobs.append(job)
         return job
+    }
+
+    /// For the look test: show the prompt as if listening at this level.
+    func testListening(_ level: Double?) {
+        pill.listening = level != nil
+        pill.level = level ?? 0
+        if level != nil { pill.text = "make the sky a warm amber" }
     }
 
     /// For the self-test: lay the prompt out and report its mic's offset.
@@ -289,11 +297,12 @@ final class Controller {
         if let p = pillPanel, p.isVisible, p.frame.contains(point) { return false }
         if let o = offer?.window, o.isVisible, o.frame.contains(point) { return false }
         if phase == .prompting, let box, box.rect.contains(point) { return false }
+        Log.write("click away at \(Int(point.x)),\(Int(point.y))")
         cancel()
         return true
     }
 
-    private func escape() { cancel() }
+    private func escape() { Log.write("esc"); cancel() }
 
     // MARK: Selecting
 

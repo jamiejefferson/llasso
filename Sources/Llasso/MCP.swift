@@ -395,8 +395,23 @@ final class Integrations: ObservableObject {
             ["type": "function",
              "function": ["name": ToolName.qualified(server: c.name, tool: t.name),
                           "description": String(t.description.prefix(1000)),
-                          "parameters": t.schema]]
+                          "parameters": Self.withWhy(t.schema)]]
         }
+    }
+
+    /// The argument every app tool gains, so an approval can say what the step is for in plain words.
+    static let why = "llasso_why"
+
+    /// Add a required `llasso_why` to a tool's parameters. Job strips it before the call.
+    static func withWhy(_ schema: [String: Any]) -> [String: Any] {
+        var s = schema
+        var props = s["properties"] as? [String: Any] ?? [:]
+        props[why] = ["type": "string",
+                      "description": "One short plain sentence for the user saying what this step does, in their terms, e.g. \"Open the link under the box in a new Hatch window\". No code."]
+        s["properties"] = props
+        s["required"] = (s["required"] as? [String] ?? []) + [why]
+        if s["type"] == nil { s["type"] = "object" }
+        return s
     }
 
     func recheck() {

@@ -38,15 +38,26 @@ extension SelfTest {
             await shoot(frame, "look-\(name)-4-prompt-opening")
             try? await Task.sleep(nanoseconds: 800_000_000)
             await shoot(frame, "look-\(name)-5-prompt")
+            Controller.shared.testListening(0.7)
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            await shoot(CGRect(x: box.minX - 40, y: box.minY - 330, width: 700, height: 320), "look-\(name)-5b-listening")
+            Controller.shared.testListening(nil)
             Controller.shared.cancel()
             try? await Task.sleep(nanoseconds: 400_000_000)
 
+            // Sent: the box and prompt go, a Working chip waits at the right edge.
             let job = Controller.shared.showTestCard(box: (box, screen))
             job.card.title = "Warm the sky up"
+            job.card.working = "Editing the image…"
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            let side = CGRect(x: v.maxX - 640, y: v.midY - 260, width: 640, height: 420)
+            await shoot(side, "look-\(name)-6-working")
+            // The answer arrives: the card comes up at the side by itself.
+            job.card.working = nil
             job.card.answer = "The sky in this photo runs from pale blue to peach. I can warm it towards amber and crop it square."
             job.card.state = .done
             try? await Task.sleep(nanoseconds: 700_000_000)
-            await shoot(frame.insetBy(dx: -40, dy: -200), "look-\(name)-6-card")
+            await shoot(side, "look-\(name)-7-card")
             job.close()
             backdrop.orderOut(nil)
         }

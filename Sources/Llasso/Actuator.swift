@@ -17,6 +17,8 @@ enum Destination: Hashable {
     case undoCode
     case openCode(name: String)
     case undoText(app: String)
+    case replaceImage(name: String)
+    case undoImage(name: String)
 
     var label: String {
         switch self {
@@ -32,6 +34,8 @@ enum Destination: Hashable {
         case .undoCode: return "Undo"
         case .openCode(let name): return "Open \(name)"
         case .undoText: return "Undo"
+        case .replaceImage(let name): return "Replace \(name)"
+        case .undoImage: return "Undo"
         }
     }
 }
@@ -46,6 +50,9 @@ enum ActionError: Error, LocalizedError {
 /// Carries out proposals in the app the user boxed.
 @MainActor
 enum Actuator {
+    /// Originals of image files Llasso replaced, by path, for Undo.
+    static var imageBackups: [String: URL] = [:]
+
     /// Folder for saved results when no project resolved.
     static var outputFolder: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/Llasso", isDirectory: true)
@@ -60,12 +67,13 @@ enum Actuator {
             d += [.copy, .newDocument, .saveAs]
             return d
         case .image:
-            var d: [Destination] = []
+            // Save, copy, then replace the source when the box came from an image file.
+            var d: [Destination] = [.saveAs, .copy]
             if let path = c.documentPath, ContentKind.imageExtensions.contains((path as NSString).pathExtension.lowercased()) {
-                d.append(.replaceFile(name: (path as NSString).lastPathComponent))
+                let name = (path as NSString).lastPathComponent
+                d += [.replaceImage(name: name), .replaceFile(name: name)]
             }
             if c.kind != .webPage && c.kind != .readOnlyText { d.append(.pasteInto(app: app)) }
-            d += [.copy, .saveAs]
             return d
         case .cells:
             var d: [Destination] = []
@@ -316,6 +324,26 @@ enum Actuator {
             try encode(png, as: url.pathExtension).write(to: out)
             NSWorkspace.shared.activateFileViewerSelecting([out])
             return "Saved \(out.lastPathComponent) beside the original."
+        case .replaceImage(let name):
+            // The original goes to Llasso's store first, so Undo can put it back.
+            guard let path = c.documentPath else { throw ActionError.failed("Llasso lost track of the file.") }
+            let url = URL(fileURLWithPath: path)
+            let backups = History.folder.appendingPathComponent("Backups", isDirectory: true)
+            try FileManager.default.createDirectory(at: backups, withIntermediateDirectories: true)
+            let backup = backups.appendingPathComponent("\(Int(Date().timeIntervalSince1970))-\(name)")
+            try FileManager.default.copyItem(at: url, to: backup)
+            imageBackups[path] = backup
+            // Same pixel size as the file it replaces, so layouts that use it don't shift.
+            let size = NSBitmapImageRep(data: (try? Data(contentsOf: url)) ?? Data())
+                .map { CGSize(width: $0.pixelsWide, height: $0.pixelsHigh) }
+            try encode(resized(png, to: size), as: url.pathExtension).write(to: url)
+            return "Replaced \(name). Undo puts the original back."
+        case .undoImage(let name):
+            guard let path = c.documentPath, let backup = imageBackups[path] else { throw ActionError.failed("The original of \(name) is missing.") }
+            let url = URL(fileURLWithPath: path)
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: backup)
+            imageBackups[path] = nil
+            return "Put the original \(name) back."
         case .pasteInto(let name):
             try await paste(.png(resized(png, to: fit, points: points)), into: app)
             return "Pasted the image into \(name)."

@@ -80,7 +80,7 @@ struct TasksView: View {
                 Text("Requests").font(.system(size: 15, weight: .semibold)).foregroundColor(.primary)
                 Spacer()
                 Button(action: onDraw) { Text("Draw a box  ⌃⌥S").font(.system(size: 12, weight: .medium)) }
-                    .buttonStyle(.plain).foregroundColor(.llGold)
+                    .buttonStyle(.plain).foregroundColor(.primary)
             }
             .padding(.horizontal, 16).padding(.vertical, 12)
             Divider()
@@ -165,7 +165,7 @@ struct JobRow: View {
             Spacer(minLength: 0)
             if status == .working {
                 Button("Stop") { job.stopAnswer() }
-                    .buttonStyle(.plain).font(.system(size: 12, weight: .medium)).foregroundColor(.llGold)
+                    .buttonStyle(.plain).font(.system(size: 12, weight: .medium)).foregroundColor(.primary)
                     .padding(.top, 1)
                     .help("Stop this request")
             }

@@ -393,7 +393,8 @@ private final class OfferIcon: NSView {
             markFill.fillColor = Palette.accent.cgColor
         }
         discLayer.fillColor = (dark ? NSColor(white: 0.04, alpha: 0.72) : NSColor(white: 1, alpha: 0.86)).cgColor
-        discLayer.strokeColor = Palette.gold.withAlphaComponent(dark ? 0.6 : 0.65).cgColor
+        discLayer.strokeColor = (dark ? NSColor(white: 1, alpha: 0.18) : NSColor(white: 0, alpha: 0.12)).cgColor
+        discLayer.lineWidth = 0.5
     }
 
     /// Dotted outline of the mark traces in, then the disc frosts in behind it.
@@ -459,10 +460,10 @@ private final class OfferIcon: NSView {
         // Opened, the prompt's mic draws the mark, so the icon's own copy hides to avoid a double image.
         markFill.opacity = opened ? 0 : 1
         markDots.opacity = opened ? 0 : markDots.opacity
-        discLayer.shadowColor = lit ? Palette.gold.cgColor : NSColor.black.cgColor
-        discLayer.shadowRadius = lit ? 9 : (dark ? 0 : 5)
-        discLayer.shadowOpacity = lit ? 0.6 : (dark ? 0 : 0.14)
-        discLayer.shadowOffset = lit || dark ? .zero : CGSize(width: 0, height: -2)
+        discLayer.shadowColor = NSColor.black.cgColor
+        discLayer.shadowRadius = lit ? 9 : 5
+        discLayer.shadowOpacity = (dark ? 0.5 : 0.16) * (lit ? 1.4 : 1)
+        discLayer.shadowOffset = CGSize(width: 0, height: -2)
         CATransaction.commit()
         recording ? startRings() : stopRings()
     }

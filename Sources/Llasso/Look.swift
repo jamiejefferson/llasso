@@ -3,8 +3,8 @@ import QuartzCore
 import SwiftUI
 import LlassoKit
 
-// The gold-thread look (Paper: "Gold lasso — styling and motion"): a 1px string of gold dots
-// round the box, the Llasso mark as the icon, and frosted glass panels edged in gold.
+// The look: a pulsing marching-ants marquee in gold round the box, the Llasso mark in gold as
+// the icon, and clean white or black frosted glass for the panels.
 
 extension Palette {
     static let gold = NSColor(srgbRed: 0.867, green: 0.698, blue: 0.306, alpha: 1)        // #DDB24E dots
@@ -29,57 +29,51 @@ extension NSAppearance {
 
 // MARK: - The lasso round a box
 
-/// The dotted gold thread round a box, in one of four states. Layer-backed so the glint and
-/// the fray run on Core Animation. The view is larger than the box by `margin` on every side,
-/// which leaves room for the halo and for dots drifting down as they fray.
+/// The marquee round a box: marching ants in the old Photoshop style, gold dashes over a dark
+/// line so it reads on any page, pulsing gently. Layer-backed so the march, the pulse and the
+/// fray run on Core Animation. The view is larger than the box by `margin` on every side, which
+/// leaves room for the dashes drifting out as they fray.
 final class LassoView: NSView {
     enum State { case resting, focused }
 
     static let margin: CGFloat = 26
-    static let restingOpacity: Float = 0.8
-    static let restingGap: CGFloat = 4.5
-    /// Dot diameter: 1.4pt reads on busy pages without looking heavy.
-    static let dotSize: CGFloat = 1.4
-    static let focusedGap: CGFloat = 3.5
+    /// Line weight, and the length of each dash and each gap.
+    static let lineWidth: CGFloat = 1
+    static let dash: CGFloat = 4
+    static let corner: CGFloat = 2
+    /// One march of a dash and a gap, in seconds; resting is slower.
+    static let marchFocused: CFTimeInterval = 0.45
+    static let marchResting: CFTimeInterval = 0.9
+    /// The pulse dips the marquee to this opacity and back every `pulse` seconds.
+    static let pulseLow: Float = 0.55
+    static let pulse: CFTimeInterval = 1.6
 
-    private let shadowDots = CAShapeLayer()
-    private let dots = CAShapeLayer()
-    private let halo = CAShapeLayer()
-    private let glint = CAShapeLayer()
+    private let group = CALayer()
+    private let base = CAShapeLayer()
+    private let ants = CAShapeLayer()
     private var dust: CALayer?
     private(set) var state: State = .resting
     private(set) var fraying = false
 
     var boxRect: CGRect { bounds.insetBy(dx: Self.margin, dy: Self.margin) }
+    static func path(round rect: CGRect) -> CGPath {
+        CGPath(roundedRect: rect, cornerWidth: corner, cornerHeight: corner, transform: nil)
+    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
         layer?.masksToBounds = false
-        for l in [halo, shadowDots, dots, glint] {
+        layer?.addSublayer(group)
+        for l in [base, ants] {
             l.fillColor = nil
-            l.lineCap = .round
+            l.lineWidth = Self.lineWidth
             l.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
-            layer?.addSublayer(l)
+            group.addSublayer(l)
         }
-        shadowDots.strokeColor = NSColor(white: 0, alpha: 0.4).cgColor
-        shadowDots.lineWidth = Self.dotSize
-        dots.strokeColor = Palette.gold.cgColor
-        dots.lineWidth = Self.dotSize
-        halo.strokeColor = Palette.gold.withAlphaComponent(0.22).cgColor
-        halo.lineWidth = 1.5
-        halo.shadowColor = Palette.gold.cgColor
-        halo.shadowOffset = .zero
-        halo.shadowRadius = 7
-        halo.shadowOpacity = 0.9
-        halo.opacity = 0
-        glint.strokeColor = Palette.glint.cgColor
-        glint.lineWidth = 1.8
-        glint.shadowColor = Palette.gold.cgColor
-        glint.shadowOffset = .zero
-        glint.shadowRadius = 3
-        glint.shadowOpacity = 1
-        glint.opacity = 0
+        base.strokeColor = NSColor(white: 0, alpha: 0.6).cgColor
+        ants.strokeColor = Palette.gold.cgColor
+        ants.lineDashPattern = [NSNumber(value: Double(Self.dash)), NSNumber(value: Double(Self.dash))]
         layout()
         apply(.resting, animated: false)
     }
@@ -88,84 +82,62 @@ final class LassoView: NSView {
 
     override func layout() {
         super.layout()
-        let path = CGPath(roundedRect: boxRect, cornerWidth: 8, cornerHeight: 8, transform: nil)
-        for l in [halo, dots, glint] { l.frame = bounds; l.path = path }
-        shadowDots.frame = bounds.offsetBy(dx: 0.5, dy: -0.6)
-        shadowDots.path = path
+        group.frame = bounds
+        let path = Self.path(round: boxRect.insetBy(dx: 0.5, dy: 0.5))
+        for l in [base, ants] { l.frame = bounds; l.path = path }
     }
 
-    /// Close the loop from the release corner: the thread draws round in a quarter second.
+    /// Close the loop from the release corner: the marquee draws round in a quarter second.
     func drawOn() {
         let a = CABasicAnimation(keyPath: "strokeEnd")
         a.fromValue = 0
         a.toValue = 1
         a.duration = 0.25
         a.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        dots.add(a, forKey: "draw")
-        shadowDots.add(a, forKey: "draw")
+        ants.add(a, forKey: "draw")
+        base.add(a, forKey: "draw")
     }
 
     func apply(_ state: State, animated: Bool = true) {
         if fraying { restore() }
         self.state = state
-        CATransaction.begin()
-        CATransaction.setAnimationDuration(animated ? 0.22 : 0)
-        let gap = state == .focused ? Self.focusedGap : Self.restingGap
-        dots.lineDashPattern = [0.01, NSNumber(value: Double(gap))]
-        shadowDots.lineDashPattern = dots.lineDashPattern
-        glint.lineDashPattern = dots.lineDashPattern
-        let opacity: Float = state == .focused ? 1 : Self.restingOpacity
-        dots.opacity = opacity
-        shadowDots.opacity = opacity * 0.9
-        halo.opacity = state == .focused ? 1 : 0
-        CATransaction.commit()
-        state == .resting ? startGlint() : stopGlint()
+        march(state == .focused ? Self.marchFocused : Self.marchResting)
+        let p = CABasicAnimation(keyPath: "opacity")
+        p.fromValue = 1
+        p.toValue = state == .focused ? (1 + Self.pulseLow) / 2 : Self.pulseLow
+        p.duration = Self.pulse / 2
+        p.autoreverses = true
+        p.repeatCount = .infinity
+        p.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        group.add(p, forKey: "pulse")
     }
 
-    /// One soft glint travels round the loop every four seconds while it rests.
-    private func startGlint() {
-        guard glint.animation(forKey: "lap") == nil else { return }
-        let perimeter = 2 * (boxRect.width + boxRect.height)
-        let span = min(0.25, 56 / max(perimeter, 1))
-        glint.opacity = 0.9
-        let start = CABasicAnimation(keyPath: "strokeStart")
-        start.fromValue = -span
-        start.toValue = 1
-        let end = CABasicAnimation(keyPath: "strokeEnd")
-        end.fromValue = 0
-        end.toValue = 1 + span
-        let lap = CAAnimationGroup()
-        lap.animations = [start, end]
-        lap.duration = 4
-        lap.repeatCount = .infinity
-        glint.add(lap, forKey: "lap")
+    private func march(_ duration: CFTimeInterval) {
+        let a = CABasicAnimation(keyPath: "lineDashPhase")
+        a.fromValue = 0
+        a.toValue = -2 * Self.dash
+        a.duration = duration
+        a.repeatCount = .infinity
+        ants.add(a, forKey: "march")
     }
 
-    private func stopGlint() {
-        glint.removeAnimation(forKey: "lap")
-        glint.opacity = 0
-    }
-
-    /// Left alone: dots flare and sparkle away outward, in random order.
+    /// Left alone: the dashes break into specks that drift away outward, in random order.
     func fray(duration: TimeInterval = 1.2) {
         guard !fraying, let host = layer else { return }
         fraying = true
-        stopGlint()
-        let gap = state == .focused ? Self.focusedGap : Self.restingGap
-        let path = CGPath(roundedRect: boxRect, cornerWidth: 8, cornerHeight: 8, transform: nil)
-        dust = Dust.scatter(along: path, gap: gap, dotSize: Self.dotSize, colour: Palette.gold,
-                            opacity: dots.opacity, drift: 12, duration: duration, into: host)
-        dots.opacity = 0
-        shadowDots.opacity = 0
-        halo.opacity = 0
+        dust = Dust.scatter(along: Self.path(round: boxRect), gap: Self.dash, dotSize: 1.4, colour: Palette.gold,
+                            opacity: 1, drift: 12, duration: duration, into: host)
+        group.removeAnimation(forKey: "pulse")
+        group.opacity = 0
     }
 
-    /// Touched mid-fray: pull the thread back to full.
+    /// Touched mid-fray: bring the marquee back.
     func restore() {
         guard fraying else { return }
         fraying = false
         dust?.removeFromSuperlayer()
         dust = nil
+        group.opacity = 1
         apply(state, animated: false)
     }
 }
@@ -307,6 +279,10 @@ extension Color {
     static let llPositive = Color(nsColor: Palette.positive)
     static let llWell = Color(nsColor: Palette.dynamic(light: NSColor(white: 0, alpha: 0.05),
                                                        dark: NSColor(white: 1, alpha: 0.07)))
+    /// Primary buttons and selected chips: solid black on light glass, solid white on dark.
+    static let llInk = Color(nsColor: Palette.text)
+    /// Text on an ink button.
+    static let llOnInk = Color(nsColor: Palette.dynamic(light: .white, dark: NSColor(white: 0.06, alpha: 1)))
     /// Text on a gold chip.
     static let llOnGold = Color(nsColor: Palette.dynamic(light: .white,
                                                          dark: NSColor(srgbRed: 0.078, green: 0.071, blue: 0.063, alpha: 1)))
@@ -322,14 +298,15 @@ enum Glass {
     static let radius: CGFloat = 16
 }
 
-/// Frosted glass that follows the system theme: white glass with a soft shadow in light mode,
-/// black glass with a soft gold glow in dark mode, both edged with a gold hairline.
-/// `amount` (0...1) frosts the glass in; `edge` fades in the solid hairline.
+/// Frosted glass that follows the system theme: clean white glass in light mode, clean black
+/// glass in dark mode, each with a neutral hairline and a soft shadow. Gold is kept for the
+/// lasso and the mark. `amount` (0...1) frosts the glass in; `edge` fades in the hairline.
 struct GlassBackground: ViewModifier {
     @Environment(\.colorScheme) private var scheme
     var radius: CGFloat = Glass.radius
     var amount: Double = 1
     var edge: Double = 1
+    var padded = true
 
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
@@ -338,24 +315,27 @@ struct GlassBackground: ViewModifier {
             .background(
                 ZStack {
                     VisualEffect(material: dark ? .hudWindow : .popover)
-                    shape.fill(dark ? Color.black.opacity(0.42) : Color.white.opacity(0.55))
-                    shape.strokeBorder(Color.llDot.opacity(0.10), lineWidth: 8).blur(radius: 8)   // inner gold light
+                    // Opaque enough that busy pages behind don't tint the glass.
+                    shape.fill(dark ? Color.black.opacity(0.72) : Color.white.opacity(0.86))
                 }
                 .clipShape(shape)
                 .opacity(amount)
             )
-            .overlay(shape.strokeBorder(Color.llDot.opacity(dark ? 0.55 : 0.6), lineWidth: 1).opacity(edge))
+            .overlay(shape.strokeBorder(Color.llHair, lineWidth: 0.5).opacity(edge))
             .compositingGroup()
-            .shadow(color: dark ? Color.llDot.opacity(0.22 * amount) : Color.black.opacity(0.13 * amount),
-                    radius: dark ? 12 : 14, x: 0, y: dark ? 0 : 7)
-            .shadow(color: dark ? Color.llDot.opacity(0.07 * amount) : Color.black.opacity(0.06 * amount),
-                    radius: dark ? 20 : 3, x: 0, y: dark ? 0 : 1)
-            .padding(Glass.margin)
+            .shadow(color: Color.black.opacity((dark ? 0.45 : 0.14) * amount), radius: 16, x: 0, y: 8)
+            .shadow(color: Color.black.opacity((dark ? 0.3 : 0.06) * amount), radius: 2, x: 0, y: 1)
+            .padding(padded ? Glass.margin : 0)
     }
 }
 
 extension View {
     func glass(radius: CGFloat = Glass.radius, amount: Double = 1, edge: Double = 1) -> some View {
         modifier(GlassBackground(radius: radius, amount: amount, edge: edge))
+    }
+
+    /// The same glass as a capsule, with no room round it; for the Working chips.
+    func chipGlass() -> some View {
+        modifier(GlassBackground(radius: 17, padded: false))
     }
 }

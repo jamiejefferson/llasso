@@ -1,18 +1,22 @@
 import AppKit
 import SwiftUI
+import Combine
 import LlassoKit
 
 /// One request after it is sent: its card, its conversation with the model, and anything it
-/// changed. Several can run at once. Clicking away hides the card and the job carries on;
-/// the menu bar lists every job and brings its card back.
+/// changed. Several can run at once. While it works, a small Working chip at the side of the
+/// screen stands in for it; the card comes up beside the chip when there is something to see
+/// or decide. Clicking away hides the card and the job carries on; the chip or the menu bar
+/// brings it back.
 @MainActor
 final class Job {
     let id = UUID()
     let card = CardModel()
     let started = Date()
     private var cardPanel: FloatingPanel?
-    private var outline: NSWindow?
-    private var lasso: LassoView?
+    private var watch: AnyCancellable?
+    /// Whether the card had something to show last time it changed, so it comes up once per result.
+    private var hadResult = false
     private let speaker: Speaker
 
     let frontApp: NSRunningApplication?
@@ -63,7 +67,21 @@ final class Job {
         }
         card.onDestination = { [weak self] d in self?.deliver(to: d) }
         card.title = "…"
-        show()
+        watch = card.objectWillChange.sink { [weak self] _ in
+            DispatchQueue.main.async { self?.cardChanged() }
+        }
+        WorkingDock.shared.refresh()
+    }
+
+    /// Something for the user arrived (text, a result, a question, a step, an error): bring
+    /// the card up beside the chip. Otherwise keep the chip current.
+    private func cardChanged() {
+        guard !closed else { return }
+        let result = !card.answer.isEmpty || card.proposal != nil || card.question != nil || card.step != nil
+            || card.error != nil || (card.state == .done && card.working == nil)
+        if result && !hadResult && !isVisible { show() }
+        hadResult = result
+        WorkingDock.shared.refresh()
     }
 
     // MARK: State for the menu
@@ -79,33 +97,35 @@ final class Job {
     }
     var appName: String { context.appName ?? "" }
     var isVisible: Bool { cardPanel?.isVisible ?? false }
+    var cardFrame: CGRect? { cardPanel?.frame }
 
     func contains(_ point: CGPoint) -> Bool { cardPanel.map { $0.isVisible && $0.frame.contains(point) } ?? false }
     func owns(_ window: NSWindow?) -> Bool { window != nil && window === cardPanel }
 
     // MARK: Card
 
+    /// The card, at the side of the screen beside the Working chips. The box itself may have
+    /// scrolled away by now, so the card no longer sits on it.
     func show() {
         // Called up from the task list on another desktop: rebuild the card here, since a card
         // stays on the desktop where it first appeared.
         if let old = cardPanel, !old.isVisible, !old.isOnActiveSpace {
             old.close(); cardPanel = nil
-            outline?.close(); outline = nil; lasso = nil
         }
         let panel = cardPanel ?? FloatingPanel(size: CGSize(width: 520 + 2 * Glass.margin, height: 120), pinned: true)
         if cardPanel == nil {
             panel.contentView = NSHostingView(rootView: CardView(model: card) { [weak panel] h in panel?.setHeight(h) })
             cardPanel = panel
-            panel.place(near: box.rect, on: box.screen)
         }
+        if !panel.isVisible { WorkingDock.shared.placeCard(panel, on: NSScreen.main ?? box.screen) }
         panel.orderFrontRegardless()
-        showOutline()
+        WorkingDock.shared.refresh()
     }
 
-    /// Click away: the card goes, the work goes on.
+    /// Click away: the card goes, the work goes on, and its chip comes back if it is still working.
     func hide() {
         cardPanel?.orderOut(nil)
-        outline?.orderOut(nil)
+        WorkingDock.shared.refresh()
     }
 
     func close() {
@@ -119,22 +139,8 @@ final class Job {
         onClose?(self)
     }
 
-    private func showOutline() {
-        if outline == nil {
-            let (o, view) = LassoWindow.make(round: box.rect)
-            view.apply(.resting, animated: false)
-            outline = o
-            lasso = view
-        }
-        outline?.orderFrontRegardless()
-    }
-
-    /// Tell the user when a job they can't see finishes.
-    private func finished() {
-        guard !isVisible else { return }
-        let what = card.state == .failed ? "stopped with a problem" : (needsYou ? "is ready for you" : "finished")
-        Toast.show("Llasso \(what): \(title.prefix(60)). Open it from the menu bar.", seconds: 5)
-    }
+    /// The card comes up by itself when the job finishes, so this only keeps the chips current.
+    private func finished() { WorkingDock.shared.refresh() }
 
     // MARK: Asking
 
@@ -267,7 +273,7 @@ final class Job {
     }
 
     private func handle(_ call: ToolCall) async -> Outcome {
-        let args = call.args
+        var args = call.args
         if let builtin = BuiltinTool.named(call.name) {
             switch builtin {
             case .askUser:
@@ -296,8 +302,11 @@ final class Job {
               let spec = mcp.tools.first(where: { $0.name == tool }) else {
             return Outcome(text: "There is no tool called \(call.name).")
         }
+        let why = (args.removeValue(forKey: Integrations.why) as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         if !spec.readOnly && !approveAll {
-            card.step = ("\(mcp.name) wants to \(tool.replacingOccurrences(of: "_", with: " "))", Self.brief(args))
+            let title = why.flatMap { $0.isEmpty ? nil : $0 } ?? "\(mcp.name) wants to \(tool.replacingOccurrences(of: "_", with: " "))"
+            card.step = (title, "\(mcp.name) · \(tool.replacingOccurrences(of: "_", with: " "))\n" + Self.brief(args))
+            card.stepDetailOpen = false
             card.state = .done
             let choice = await waitForDecision()
             card.step = nil
@@ -307,7 +316,7 @@ final class Job {
             }
         }
         card.state = .thinking
-        card.working = "\(mcp.name): \(tool.replacingOccurrences(of: "_", with: " "))…"
+        card.working = why.flatMap { $0.isEmpty ? nil : $0 + "…" } ?? "\(mcp.name): \(tool.replacingOccurrences(of: "_", with: " "))…"
         defer { card.working = nil }
         do {
             let r = try await mcp.callTool(tool, arguments: args)
@@ -361,7 +370,6 @@ final class Job {
                 card.proposal?.done = result
                 card.proposal?.destinations = [.undoText(app: context.appName ?? "the app"), .copy]
                 actions.append(place.label + " (automatic)")
-                outline?.orderOut(nil)
                 History.append(prompt: lastPrompt, verb: verb, context: context, answer: card.answer,
                                model: Settings.shared.model, actions: actions)
                 return Outcome(text: "\(result) The user can undo it from the card. Do not repeat the text.", endsTurn: true)
@@ -481,12 +489,12 @@ final class Job {
                 card.proposal?.note = nil
                 if case .undoText = d { card.proposal?.destinations = [.copy] }
                 if case .replaceInPlace = d { card.proposal?.destinations = [.undoText(app: ctx.appName ?? "the app"), .copy] }
+                if case .replaceImage(let name) = d { card.proposal?.destinations = [.undoImage(name: name), .copy, .saveAs] }
+                if case .undoImage = d { card.proposal?.destinations = [.copy, .saveAs] }
                 actions.append(d.label)
                 messages.append(.user("(Llasso note, not from the user) The user chose “\(d.label)”. \(result)"))
                 History.append(prompt: lastPrompt, verb: verb, context: ctx, answer: card.answer,
                                model: Settings.shared.model, actions: actions)
-                // Leaving the boxed app's change in view: drop the outline once text went back in place.
-                if case .replaceInPlace = d { outline?.orderOut(nil) }
             } catch ActionError.cancelled {
                 card.working = nil
             } catch {
@@ -511,7 +519,6 @@ final class Job {
     }
 
     private func waitForDecision() async -> String? {
-        if !isVisible { Toast.show("Llasso needs you: \(card.title.prefix(60)). Open it from the menu bar.", seconds: 5) }
         return await withCheckedContinuation { cont in
             decision?.resume(returning: nil)
             decision = cont
