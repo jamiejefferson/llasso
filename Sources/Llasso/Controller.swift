@@ -18,6 +18,9 @@ final class Controller {
     let speaker = Speaker()
     /// Sent requests, newest last. Each keeps running when its card is hidden.
     private(set) var jobs: [Job] = []
+    /// For the click test.
+    var promptNotice: String? { pill.notice }
+    var listening: Bool { voice.isRunning }
     private var jobClickMonitors: [Any] = []
 
     private var frontApp: NSRunningApplication?
@@ -28,6 +31,9 @@ final class Controller {
     /// The icon offered after a drag; it stays beside the prompt as the hold-to-talk button.
     var offer: Offer?
     private var holding = false
+    /// When the current press on the icon or mic began; a press shorter than `clickTime` is a click.
+    private var holdStarted: Date?
+    static let clickTime: TimeInterval = 0.35
     private var voiceStarting = false
 
     private var keyMonitor: Any?
@@ -163,24 +169,43 @@ final class Controller {
     func holdToTalk() {
         guard phase == .prompting else { return }
         holding = true
+        holdStarted = Date()
         pill.typed = false
         pill.pending = nil
         offer?.setRecording(true)
         startVoice()
     }
 
-    /// Release after holding the icon: send straight away.
+    /// Release after holding the icon: send straight away. A click leaves the prompt open for
+    /// typing, and a hold that heard nothing sends nothing.
     func releaseToSend() {
         guard holding else { return }
         holding = false
         offer?.setRecording(false)
         guard phase == .prompting else { return }
-        if pill.text.isEmpty {
+        if Date().timeIntervalSince(holdStarted ?? .distantPast) < Self.clickTime {
+            stopListening(notice: nil)
+        } else if pill.text.isEmpty {
             // Released before any words arrived: wait briefly for the last of them.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.send() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                guard let self, self.phase == .prompting, !self.holding else { return }
+                if self.pill.text.isEmpty {
+                    self.stopListening(notice: "Didn't hear anything. Hold the icon while you talk, or type.")
+                } else {
+                    self.send()
+                }
+            }
         } else {
             send()
         }
+    }
+
+    /// Mic off, prompt stays open with the text field focused.
+    private func stopListening(notice: String?) {
+        voice.abandon()
+        pill.listening = false
+        pill.pending = nil
+        if let notice { pill.notice = notice }
     }
 
     func begin() {
@@ -290,7 +315,8 @@ final class Controller {
             do {
                 try await voice.start()
                 // Released and sent, or cancelled, before the mic came up: let it go at once.
-                guard phase == .prompting else { voice.abandon(); pill.listening = false; return }
+                // Also let it go if the press was a click that ended before the mic came up.
+                guard phase == .prompting, holding else { voice.abandon(); pill.listening = false; return }
                 pill.listening = voice.isRunning
                 lastSpeechChange = Date()
             } catch {

@@ -121,6 +121,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--jobtest") {
             Task { @MainActor in await SelfTest.jobs(); NSApp.terminate(nil) }
         }
+        if CommandLine.arguments.contains("--clicktest") {
+            Task { @MainActor in await SelfTest.click(); NSApp.terminate(nil) }
+        }
         if CommandLine.arguments.contains("--namedtest") {
             Task { @MainActor in await SelfTest.named(); NSApp.terminate(nil) }
         }
@@ -766,6 +769,49 @@ enum SelfTest {
         r["jobsLeft"] = Controller.shared.jobs.count
         if let data = try? JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: History.folder.appendingPathComponent("jobtest.json"))
+        }
+    }
+
+    /// A quick click on the icon opens the prompt and sends nothing; a hold that hears nothing
+    /// sends nothing; Stop ends a running job. Writes clicktest.json.
+    static func click() async {
+        var r: [String: Any] = [:]
+        let c = Controller.shared
+        guard let screen = NSScreen.main else { return }
+        let f = screen.visibleFrame
+        let box = CGRect(x: f.minX + 200, y: f.maxY - 400, width: 300, height: 160)
+        let before = c.jobs.count
+        c.holdToTalk(box: box)
+        try? await Task.sleep(nanoseconds: 120_000_000)
+        c.releaseToSend()
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        r["click.phase"] = "\(c.phase)"
+        r["click.jobsSent"] = c.jobs.count - before
+        r["click.micOn"] = c.listening
+        // A full hold with silence.
+        c.holdToTalk()
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        c.releaseToSend()
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        r["silentHold.phase"] = "\(c.phase)"
+        r["silentHold.jobsSent"] = c.jobs.count - before
+        r["silentHold.micOn"] = c.listening
+        r["silentHold.notice"] = c.promptNotice ?? ""
+        c.cancel()
+        // Stop from the request list.
+        let crop = (try? Capture.png(buttonImage())) ?? Data()
+        let ctx = ScreenContext(appName: "Safari", bundleID: "com.apple.Safari", url: "https://example.com")
+        let job = c.startTestJob(box: (box, screen), context: ctx,
+                                 prompt: "Write three long paragraphs about this page.", crop: crop)
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        r["stop.runningBefore"] = job.isRunning
+        job.stopAnswer()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        r["stop.runningAfter"] = job.isRunning
+        r["stop.state"] = "\(job.card.state)"
+        job.close()
+        if let data = try? JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: History.folder.appendingPathComponent("clicktest.json"))
         }
     }
 

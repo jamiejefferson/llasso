@@ -370,7 +370,7 @@ struct CardView: View {
                     .onAppear { focused = true }
             }
             HStack(spacing: 8) {
-                if model.state == .thinking || model.state == .streaming {
+                if model.state == .thinking || model.state == .streaming || model.working != nil {
                     chip("Stop", primary: true) { model.onStop?() }
                 } else {
                     if !model.answer.isEmpty {

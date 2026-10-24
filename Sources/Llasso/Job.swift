@@ -546,6 +546,9 @@ final class Job {
         streamTask?.cancel()
         streamTask = nil
         speaker.stop()
+        card.working = nil
+        Pointer.clear()
+        Log.write("stopped: \(title.prefix(60))")
         if card.state != .failed { card.state = .done }
     }
 

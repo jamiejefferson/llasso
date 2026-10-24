@@ -163,6 +163,12 @@ struct JobRow: View {
                     .font(.system(size: 11)).foregroundColor(status == .needsYou ? .llGold : Color(nsColor: .tertiaryLabelColor))
             }
             Spacer(minLength: 0)
+            if status == .working {
+                Button("Stop") { job.stopAnswer() }
+                    .buttonStyle(.plain).font(.system(size: 12, weight: .medium)).foregroundColor(.llGold)
+                    .padding(.top, 1)
+                    .help("Stop this request")
+            }
         }
         .padding(.horizontal, 16).padding(.vertical, 8)
         .contentShape(Rectangle())
