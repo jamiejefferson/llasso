@@ -327,6 +327,8 @@ enum SettingsWindow {
 final class SettingsForm: ObservableObject {
     @Published var key = ""
     @Published var saved = false
+    @Published var problem: String?
+    @Published var checking = false
     @Published var screenOK = CGPreflightScreenCaptureAccess()
     @Published var axOK = AXIsProcessTrusted()
     @Published var micOK = VoiceInput.microphoneAllowed
@@ -344,6 +346,8 @@ struct SettingsView: View {
     @ObservedObject private var integrations = Integrations.shared
     /// The look test sets this to show the first-run state on a Mac that has a key.
     var showsNoKey = false
+    /// The look test sets this to show a refused key.
+    var showsProblem: String? = nil
     private var hasKey: Bool { settings.hasKey && !showsNoKey }
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
@@ -369,7 +373,11 @@ struct SettingsView: View {
                         Button("Save", action: saveKey)
                             .buttonStyle(.borderedProminent)
                             .controlSize(.large)
-                            .disabled(form.key.isEmpty)
+                            .disabled(form.key.isEmpty || form.checking)
+                    }
+                    if let problem = form.problem ?? showsProblem {
+                        Label(problem, systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout).foregroundStyle(.red)
                     }
                     if hasKey {
                         Label(form.saved ? "Saved. Llasso is ready." : "A key is saved in your Keychain.", systemImage: "checkmark.circle.fill")
@@ -456,11 +464,22 @@ struct SettingsView: View {
         }
     }
 
+    /// Checks the key with OpenRouter before keeping it, so a wrong paste shows here
+    /// instead of as an error on every request.
     private func saveKey() {
-        guard !form.key.isEmpty else { return }
-        settings.saveKey(form.key)
-        form.key = ""
-        form.saved = true
+        let key = OpenRouterClient.cleanKey(form.key)
+        guard !key.isEmpty, !form.checking else { return }
+        form.checking = true
+        form.problem = nil
+        Task { @MainActor in
+            let problem = await OpenRouterClient(apiKey: key).keyProblem()
+            form.checking = false
+            form.problem = problem
+            guard problem == nil else { return }
+            settings.saveKey(key)
+            form.key = ""
+            form.saved = true
+        }
     }
 
     private func permission(_ name: String, ok: Bool, need: String, grant: @escaping () -> Void) -> some View {

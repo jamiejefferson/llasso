@@ -316,6 +316,20 @@ if ProcessInfo.processInfo.environment["LLASSO_LIVE_MEDIA"] == "1",
     }
     sem3.wait()
 }
+// A pasted key loses the wrapping copied with it, and OpenRouter's verdict on a key comes back as words.
+check("key loses quotes and Bearer", OpenRouterClient.cleanKey(" \u{201C}Bearer sk-or-v1-abc\u{201D}\n") == "sk-or-v1-abc")
+check("plain key unchanged", OpenRouterClient.cleanKey("sk-or-v1-abc") == "sk-or-v1-abc")
+check("401 asks for the key again", OpenRouterError.http(401, "Missing Authentication header").errorDescription?.contains("settings") == true)
+let keySem = DispatchSemaphore(value: 0)
+var notAKey: String?, unknownKey: String?
+Task {
+    notAKey = await OpenRouterClient(apiKey: "hello").keyProblem()
+    unknownKey = await OpenRouterClient(apiKey: "sk-or-v1-0000").keyProblem()
+    keySem.signal()
+}
+keySem.wait()
+check("non-key refused", notAKey?.contains("sk-or-") == true)
+check("unknown key refused by OpenRouter", unknownKey?.contains("recognise") == true)
 
 print(failures == 0 ? "All checks passed." : "\(failures) check(s) failed.")
 exit(Int32(failures))
