@@ -1,5 +1,11 @@
 # Llasso
 
+## Install
+
+    curl -fsSL https://raw.githubusercontent.com/jamiejefferson/llasso/main/install.sh | sh
+
+Needs a Mac with Apple silicon and macOS 26 or later. Run the same command to update. First run: paste an OpenRouter key in Settings, then allow Screen Recording, Microphone and Accessibility.
+
 Draw a box round anything on your Mac, say or type what you want, and get an answer beside the box.
 
 Hold ⌘ and drag a box round anything on screen. A prompt opens when you let go: type and press Return, or hold the mic and talk. The answer arrives on a card beside the box; click Thanks! to close it. A ⌘-click that doesn't move still goes to the app as normal. Where ⌘-drag doesn't suit, press ⌃⌥S or choose Draw a box from the menu bar.
@@ -13,6 +19,10 @@ The microphone is on only while you hold the mic on the prompt; releasing sends.
 Several requests can run at once. A sent request shrinks to a Working chip at the screen edge, and its card comes up when it finishes. The menu bar icon counts jobs that are running or waiting on you, and clicking it lists every task and brings its card back.
 
 Feedback: Send feedback… in the menu bar sends a note (feedback, bug or idea, with an optional email and screenshot) to the `llasso_feedback` table in Supabase, defined in `supabase/llasso_feedback.sql`. The app's key can add rows and nothing else. A copy stays in `feedback.md` in the history folder.
+
+## Release
+
+Raise `CFBundleShortVersionString` in `Resources/Info.plist`, commit, then run `./release.sh`. It builds the app, zips it and publishes a GitHub release, which the install command picks up.
 
 ## Build and run
 
