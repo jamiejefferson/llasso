@@ -40,8 +40,7 @@ final class HotKey {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var hotKey: HotKey?
-    private let watcher = DragWatcher()
-    private var offer: Offer?
+    private let watcher = CommandDrag()
     private var gestureRetry: Timer?
     private var statusTimer: Timer?
     private var menu: NSMenu?
@@ -74,23 +73,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { Controller.shared.toggle() }
         }
 
-        // Any box-shaped drag offers the Llasso icon where it ended.
-        let offer = Offer()
-        offer.onOpen = { Controller.shared.begin(box: $0) }
-        offer.onHoldBegan = { Controller.shared.holdToTalk(box: $0) }
-        offer.onHoldEnded = { Controller.shared.releaseToSend() }
-        Controller.shared.offer = offer
-        self.offer = offer
-        watcher.onPress = { [weak self] p in self?.offer?.pressed(at: p) }
-        watcher.onBox = { box, end in
-            guard Controller.shared.phase == .idle,
-                  !Sensitive.isSensitive(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
-            else { return }
-            offer.show(box: box, near: end)
-        }
+        // Hold ⌘ and drag to draw a box; the prompt opens when you let go.
+        watcher.onStart = { p in MainActor.assumeIsolated { Controller.shared.beginDrag(at: p) } }
+        watcher.onMove = { p in MainActor.assumeIsolated { Controller.shared.drag(to: p) } }
+        watcher.onEnd = { MainActor.assumeIsolated { Controller.shared.endDrag() } }
         // A test run started from a terminal is charged to the terminal's permissions, not
         // Llasso's, so it can look ungranted; it must not open Settings or start the drag watcher.
-        let testRun = CommandLine.arguments.contains { $0.hasPrefix("--") && $0.hasSuffix("test") }
+        // The draw test needs the ⌘-drag watcher, so it counts as a normal run here.
+        let testRun = CommandLine.arguments.contains { $0.hasPrefix("--") && $0.hasSuffix("test") && $0 != "--drawtest" }
         // The tap needs Accessibility; keep trying until it is granted.
         if !testRun, !watcher.start() {
             gestureRetry = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] t in
@@ -126,6 +116,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if CommandLine.arguments.contains("--flowtest") {
             Task { @MainActor in await SelfTest.flow(); NSApp.terminate(nil) }
+        }
+        if CommandLine.arguments.contains("--drawtest") {
+            Task { @MainActor in await SelfTest.draw(); NSApp.terminate(nil) }
         }
         if CommandLine.arguments.contains("--hatchtest") {
             Task { @MainActor in await SelfTest.hatch(); NSApp.terminate(nil) }
@@ -205,7 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         p.contentViewController = NSHostingController(rootView: TasksView(
             model: model,
             onShow: { [weak p] job in p?.performClose(nil); job.show() },
-            onDraw: { [weak p] in p?.performClose(nil); DispatchQueue.main.async { Controller.shared.begin() } },
+            onDraw: { [weak self] in self?.drawFromList() },
             onClear: { Controller.shared.clearFinished(); model.sync() },
             onSettings: { [weak p] in p?.performClose(nil); SettingsWindow.show() },
             onQuit: { NSApp.terminate(nil) }))
@@ -214,6 +207,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         p.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     }
 
+
+    /// The list's Draw a box button.
+    @MainActor func drawFromList() {
+        popover?.performClose(nil)
+        DispatchQueue.main.async { Controller.shared.begin() }
+    }
 
     @objc private func draw() { DispatchQueue.main.async { Controller.shared.begin() } }
     @objc private func settings() { SettingsWindow.show() }
@@ -337,13 +336,13 @@ struct SettingsView: View {
                 permission("Microphone", ok: form.micOK, need: "To talk instead of type") {
                     Task { form.micOK = await VoiceInput.requestMicrophone() }
                 }
-                permission("Accessibility", ok: form.axOK, need: "For the drag-then-icon gesture, and to read the app's file and URL") {
+                permission("Accessibility", ok: form.axOK, need: "For ⌘-drag, and to read the app's file and URL") {
                     let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
                     _ = AXIsProcessTrustedWithOptions(opts as CFDictionary)
                 }
             }
             Section("Use") {
-                Text("Drag a box round anything as you normally would. A Llasso icon appears where you let go: rest the pointer on it and talk, or type. Or press ⌃⌥S to draw a box straight away. Stop talking and Llasso sends after a second. Or type and press Return. Esc stops or closes.")
+                Text("Hold ⌘ and drag a box round anything. The prompt opens when you let go: type and press Return, or hold the mic and talk. Where ⌘-drag doesn't reach, press ⌃⌥S or choose Draw a box from the menu bar. Esc stops or closes.")
                     .font(.callout)
             }
         }
@@ -782,7 +781,7 @@ enum SelfTest {
         }
     }
 
-    /// A quick click on the icon opens the prompt and sends nothing; a hold that hears nothing
+    /// A quick click on the prompt's mic sends nothing; a hold that hears nothing
     /// sends nothing; Stop ends a running job. Writes clicktest.json.
     static func click() async {
         var r: [String: Any] = [:]
@@ -791,7 +790,8 @@ enum SelfTest {
         let f = screen.visibleFrame
         let box = CGRect(x: f.minX + 200, y: f.maxY - 400, width: 300, height: 160)
         let before = c.jobs.count
-        c.holdToTalk(box: box)
+        c.begin(box: box)
+        c.holdToTalk()
         try? await Task.sleep(nanoseconds: 120_000_000)
         c.releaseToSend()
         try? await Task.sleep(nanoseconds: 1_200_000_000)

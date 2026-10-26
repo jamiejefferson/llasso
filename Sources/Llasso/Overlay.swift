@@ -33,7 +33,7 @@ final class OverlayWindow: NSWindow {
     override var canBecomeMain: Bool { true }
 }
 
-/// Draws the light dim and the gold thread while dragging, and reports the drag.
+/// Draws the light dim and the marquee while dragging, and reports the drag.
 /// Once a box is chosen, a LassoView holds it in focus while the prompt is open.
 final class SelectionView: NSView {
     enum Mode { case selecting, holding, outline }
@@ -101,10 +101,11 @@ final class SelectionView: NSView {
 
     func dragBegan(at point: CGPoint) {
         guard mode == .selecting else { return }
+        // First, because it clears every overlay, this one included.
+        onPointerDown?()
         anchor = point
         head = point
         selection = nil
-        onPointerDown?()
         needsDisplay = true
     }
 
@@ -146,14 +147,17 @@ final class SelectionView: NSView {
             drawHint()
             return
         }
-        // The marquee while you draw: gold dashes over a dark line, like the one it becomes.
+        // The marquee while you draw: white dashes over a dark line, like the one it becomes,
+        // marching at the same pace.
         let rect = selection.insetBy(dx: 0.5, dy: 0.5)
         let line = NSBezierPath(roundedRect: rect, xRadius: LassoView.corner, yRadius: LassoView.corner)
         line.lineWidth = LassoView.lineWidth
         NSColor(white: 0, alpha: 0.6).setStroke()
         line.stroke()
-        line.setLineDash([LassoView.dash, LassoView.dash], count: 2, phase: 0)
-        Palette.gold.setStroke()
+        let lap = 2 * LassoView.dash
+        let phase = CGFloat(CACurrentMediaTime().truncatingRemainder(dividingBy: LassoView.marchFocused) / LassoView.marchFocused) * lap
+        line.setLineDash([LassoView.dash, LassoView.dash], count: 2, phase: lap - phase)
+        Palette.ant.setStroke()
         line.stroke()
         if let head { drawBead(at: head) }
     }

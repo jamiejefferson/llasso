@@ -3,7 +3,7 @@ import ScreenCaptureKit
 import SwiftUI
 import LlassoKit
 
-/// `--looktest`: puts the gold thread, the icon, the prompt and a card on screen over a light
+/// `--looktest`: puts the marquee mid-drag, the prompt and a card on screen over a light
 /// and a dark backdrop, and saves what the screen shows to look-*.png in the history folder.
 extension SelfTest {
     static func look() async {
@@ -20,18 +20,12 @@ extension SelfTest {
             backdrop.orderFrontRegardless()
             try? await Task.sleep(nanoseconds: 300_000_000)
 
-            let offer = Offer()
-            offer.show(box: box, near: release)
-            try? await Task.sleep(nanoseconds: 900_000_000)
-            await shoot(frame, "look-\(name)-1-resting")
-            offer.testHover()
-            try? await Task.sleep(nanoseconds: 400_000_000)
-            await shoot(frame, "look-\(name)-2-hover")
-            offer.testFray()
-            try? await Task.sleep(nanoseconds: 550_000_000)
-            await shoot(frame, "look-\(name)-3-fraying")
-            try? await Task.sleep(nanoseconds: 900_000_000)
-            offer.dismiss()
+            // Mid ⌘-drag: the marquee follows the pointer.
+            _ = Controller.shared.beginDrag(at: CGPoint(x: box.minX, y: box.maxY))
+            Controller.shared.drag(to: CGPoint(x: box.midX + 60, y: box.midY - 40))
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            await shoot(frame, "look-\(name)-1-drawing")
+            Controller.shared.cancel()
 
             Controller.shared.begin(box: box)
             try? await Task.sleep(nanoseconds: 120_000_000)

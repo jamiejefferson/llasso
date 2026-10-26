@@ -135,7 +135,7 @@ struct PillView: View {
                             model.micOffset = CGPoint(x: f.midX, y: f.midY)
                         }
                     })
-                TextField(model.listening ? "Listening… release to send" : "Type, or hold the icon to talk",
+                TextField(model.listening ? "Listening… release to send" : "Type, or hold the mic to talk",
                           text: $model.text, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 17))

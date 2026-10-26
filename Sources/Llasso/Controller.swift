@@ -28,10 +28,10 @@ final class Controller {
     private var captureTask: Task<Capture?, Never>?
     private var context = ScreenContext()
     private var pointerHeld = false
-    /// The icon offered after a drag; it stays beside the prompt as the hold-to-talk button.
-    var offer: Offer?
+    /// The overlay a ⌘-drag is drawing on.
+    private weak var dragOverlay: OverlayWindow?
     private var holding = false
-    /// When the current press on the icon or mic began; a press shorter than `clickTime` is a click.
+    /// When the current press on the mic began; a press shorter than `clickTime` is a click.
     private var holdStarted: Date?
     static let clickTime: TimeInterval = 0.35
     private var voiceStarting = false
@@ -47,8 +47,8 @@ final class Controller {
     private var watchdog: Timer?
 
     private init() {
-        // Every two seconds, put Llasso right if a job has lost all its windows, or the
-        // icon is left open with no job behind it. Either leaves new drags ignored.
+        // Every two seconds, put Llasso right if the prompt has lost all its windows,
+        // which would leave new boxes ignored.
         watchdog = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.checkStuck() }
         }
@@ -73,12 +73,8 @@ final class Controller {
 
     private func checkStuck() {
         if NSApp.modalWindow != nil { return }
-        if phase == .idle {
-            if offer?.isOpened == true { Log.write("watchdog: open icon with no job; dismissed"); offer?.dismiss() }
-            return
-        }
-        let visible = (pillPanel?.isVisible ?? false)
-            || overlays.contains { $0.isVisible } || (offer?.isShowing ?? false)
+        if phase == .idle { return }
+        let visible = (pillPanel?.isVisible ?? false) || overlays.contains { $0.isVisible }
         if !visible { Log.write("watchdog: phase \(phase) with no windows; reset"); cancel() }
     }
 
@@ -161,11 +157,31 @@ final class Controller {
         if phase == .idle { begin() } else { cancel() }
     }
 
-    /// From the drag offer: the box is already drawn (AppKit global), so go straight to the prompt.
+    /// ⌘-drag: the box draws on the overlay as the pointer moves (AppKit global points).
+    /// Returns false when no box can start, so the press goes back to the app.
+    func beginDrag(at point: CGPoint) -> Bool {
+        begin()
+        guard phase == .selecting, let w = overlays.first(where: { $0.frame.contains(point) }) else { return false }
+        dragOverlay = w
+        w.selectionView.dragBegan(at: CGPoint(x: point.x - w.frame.minX, y: point.y - w.frame.minY))
+        return true
+    }
+
+    func drag(to point: CGPoint) {
+        guard let w = dragOverlay else { return }
+        w.selectionView.dragMoved(to: CGPoint(x: point.x - w.frame.minX, y: point.y - w.frame.minY))
+    }
+
+    func endDrag() {
+        dragOverlay?.selectionView.dragEnded()
+        dragOverlay = nil
+    }
+
+    /// For the look test: a box already drawn (AppKit global) goes straight to the prompt.
     func begin(box: CGRect) {
         begin()
         guard phase == .selecting,
-              let w = overlays.first(where: { $0.frame.intersects(box) && $0.frame.contains(CGPoint(x: box.midX, y: box.midY)) })
+              let w = overlays.first(where: { $0.frame.contains(CGPoint(x: box.midX, y: box.midY)) })
                 ?? overlays.first(where: { $0.frame.intersects(box) })
         else { return }
         let local = box.intersection(w.frame).offsetBy(dx: -w.frame.minX, dy: -w.frame.minY)
@@ -173,20 +189,14 @@ final class Controller {
         selectionMade(local, in: w)
     }
 
-    /// Press on the offer icon: open the prompt if it isn't open, and record until release.
-    /// This press, or one on the pill's mic, is the only thing that turns the microphone on.
-    func holdToTalk(box: CGRect) {
-        if phase == .idle { begin(box: box) }
-        holdToTalk()
-    }
-
+    /// Press on the prompt's mic: record until release.
+    /// This press is the only thing that turns the microphone on.
     func holdToTalk() {
         guard phase == .prompting else { return }
         holding = true
         holdStarted = Date()
         pill.typed = false
         pill.pending = nil
-        offer?.setRecording(true)
         startVoice()
     }
 
@@ -195,7 +205,6 @@ final class Controller {
     func releaseToSend() {
         guard holding else { return }
         holding = false
-        offer?.setRecording(false)
         guard phase == .prompting else { return }
         if Date().timeIntervalSince(holdStarted ?? .distantPast) < Self.clickTime {
             stopListening(notice: nil)
@@ -204,7 +213,7 @@ final class Controller {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
                 guard let self, self.phase == .prompting, !self.holding else { return }
                 if self.pill.text.isEmpty {
-                    self.stopListening(notice: "Didn't hear anything. Hold the icon while you talk, or type.")
+                    self.stopListening(notice: "Didn't hear anything. Hold the mic while you talk, or type.")
                 } else {
                     self.send()
                 }
@@ -223,8 +232,7 @@ final class Controller {
     }
 
     func begin() {
-        let keepOffer = offer?.window != nil && phase == .idle
-        cancel(keepingOffer: keepOffer)
+        cancel()
         let front = NSWorkspace.shared.frontmostApplication
         if Sensitive.isSensitive(bundleID: front?.bundleIdentifier) {
             Toast.show("Llasso is off while \(front?.localizedName ?? "this app") is in front.")
@@ -289,7 +297,7 @@ final class Controller {
         if let local = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self] event in
             guard let self else { return event }
             let window = event.window
-            if window === self.pillPanel || window === self.offer?.window || self.jobs.contains(where: { $0.owns(window) }) { return event }
+            if window === self.pillPanel || self.jobs.contains(where: { $0.owns(window) }) { return event }
             // A save panel or alert Llasso opened is part of the job, not a click away from it.
             if NSApp.modalWindow != nil || window is NSSavePanel { return event }
             return self.clicked(at: NSEvent.mouseLocation) ? nil : event
@@ -301,7 +309,6 @@ final class Controller {
     private func clicked(at point: CGPoint) -> Bool {
         guard phase == .prompting else { return false }
         if let p = pillPanel, p.isVisible, p.frame.contains(point) { return false }
-        if let o = offer?.window, o.isVisible, o.frame.contains(point) { return false }
         if phase == .prompting, let box, box.rect.contains(point) { return false }
         Log.write("click away at \(Int(point.x)),\(Int(point.y))")
         cancel()
@@ -402,14 +409,7 @@ final class Controller {
             panel.contentView = host
             pillPanel = panel
         }
-        if let anchor = offer?.iconCentre {
-            // Opened from the icon: the prompt appears under the pointer, with its mic
-            // where the icon was, and the icon stays on the mic as the hold-to-talk button.
-            panel.place(pill.micOffset, at: anchor, on: screen)
-            offer?.moveIcon(to: CGPoint(x: panel.frame.minX + pill.micOffset.x, y: panel.frame.maxY - pill.micOffset.y))
-        } else {
-            panel.place(near: rect, on: screen)
-        }
+        panel.place(near: rect, on: screen)
         pill.reveal()
         panel.makeKeyAndOrderFront(nil)
     }
@@ -436,7 +436,6 @@ final class Controller {
         pauseTimer?.invalidate()
         pill.pending = nil
         holding = false
-        offer?.dismiss()
         let usedVoice = voice.isRunning && !pill.typed
         let job = Job(frontApp: frontApp, box: box, verb: pill.verb, context: context,
                       integration: integration, speaker: speaker)
@@ -470,13 +469,13 @@ final class Controller {
         }
     }
 
-    func cancel() { cancel(keepingOffer: false) }
+    func cancel() { cancel(keepingVoice: false) }
 
     /// Reset the prompt. Sent jobs are left alone.
-    private func cancel(keepingOffer: Bool = false, keepingVoice: Bool = false) {
+    private func cancel(keepingVoice: Bool) {
         if phase != .idle { Log.write("prompt closed from \(phase)") }
         holding = false
-        if !keepingOffer { offer?.dismiss() }
+        dragOverlay = nil
         pauseTimer?.invalidate()
         pauseTimer = nil
         captureTask?.cancel()
