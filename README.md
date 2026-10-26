@@ -37,3 +37,7 @@ First run: paste an OpenRouter key in Settings, then allow Screen Recording, Mic
                                                            # ⌘-click reaches the app; writes drawtest.json
     open ~/Applications/Llasso.app --args --savetest       # opens Save to… over the overlay and checks it sits on top
                                                            # and starts in the project; writes savetest.json
+
+## Licence
+
+MIT. See LICENSE.
