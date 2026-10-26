@@ -321,6 +321,8 @@ struct ProposalCard {
     var done: String?
     /// Why an automatic step didn't happen, shown quietly above the chips.
     var note: String?
+    /// The question the first chip answers ("Replace the boxed text in Notes with this?").
+    var ask: String?
 }
 
 struct CardView: View {
@@ -553,6 +555,9 @@ struct CardView: View {
             }
             if let note = p.note, p.done == nil {
                 Text(note).font(.system(size: 12)).foregroundColor(.llSub)
+            }
+            if let ask = p.ask, p.done == nil {
+                Text(ask).font(.system(size: 14, weight: .semibold)).foregroundColor(.llText)
             }
             FlowRow(items: p.destinations) { d in
                 chip(d.label, primary: d == p.destinations.first && p.done == nil) { model.onDestination?(d) }

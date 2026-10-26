@@ -447,27 +447,19 @@ final class Job {
                 return Outcome(text: "The sound model failed: \(error.localizedDescription)", endsTurn: true)
             }
         }
-        card.proposal = cardP
-        // Text that can go back where it came from goes straight back; the card offers Undo.
-        if case .text(let text, _) = p, let place = cardP.destinations.first(where: { if case .replaceInPlace = $0 { return true }; return false }) {
-            card.working = "Putting it back…"
-            do {
-                let result = try await ActionQueue.run { [context, frontApp] in
-                    try await Actuator.text(text, to: place, context: context, app: frontApp)
-                }
-                card.working = nil
-                card.proposal?.done = result
-                card.proposal?.destinations = [.undoText(app: context.appName ?? "the app"), .copy]
-                actions.append(place.label + " (automatic)")
-                History.append(prompt: lastPrompt, verb: verb, context: context, answer: card.answer,
-                               model: modelID, actions: actions)
-                return Outcome(text: "\(result) The user can undo it from the card. Do not repeat the text.", endsTurn: true)
-            } catch {
-                // Couldn't put it back (nothing selected, app busy): Replace stays on the card to try again.
-                card.working = nil
-                card.proposal?.note = error.localizedDescription
+        // Text always checks whether it can go back where it came from, and asks first.
+        if case .text = p {
+            let app = context.appName ?? "the app"
+            if cardP.destinations.contains(where: { if case .replaceInPlace = $0 { return true }; return false }) {
+                cardP.ask = context.boxedRange != nil ? "Replace the boxed text in \(app) with this?"
+                    : context.canSetField ? "Replace what's in the field in \(app) with this?"
+                    : context.mayHoldSelection ? "Replace your selection in \(app) with this?"
+                    : "Replace the selected text in \(app) with this?"
+            } else {
+                cardP.note = "Llasso can't change the text in \(app) from here. Select the text and ask again to replace it, or copy this."
             }
         }
+        card.proposal = cardP
         return Outcome(text: "Shown to the user, who will choose where it goes. Do not repeat it.", endsTurn: true)
     }
 

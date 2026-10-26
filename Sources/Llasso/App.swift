@@ -107,6 +107,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--fronttest") {
             Task { @MainActor in await SelfTest.front(); NSApp.terminate(nil) }
         }
+        if CommandLine.arguments.contains("--boxtest") {
+            Task { @MainActor in await SelfTest.boxedText(); NSApp.terminate(nil) }
+        }
         if CommandLine.arguments.contains("--looktest") {
             Task { @MainActor in await SelfTest.look(); NSApp.terminate(nil) }
         }
@@ -653,6 +656,104 @@ enum SelfTest {
         } catch { r["error"] = error.localizedDescription }
         _ = try? await Shell.osascript("tell application \"Google Chrome\" to close front window")
         write(r, "pastetest.json")
+    }
+
+    /// `--boxtest`: a TextEdit note with nothing selected and Llasso's Settings in front. A box
+    /// over lines two and three must find TextEdit, read exactly those lines, and replace only
+    /// them. Writes boxtest.json and closes the note without saving.
+    static func boxedText() async {
+        var r: [String: Any] = [:]
+        let original = "Line one stays.\nLine two goes.\nLine three goes too.\nLine four stays."
+        let notes = CommandLine.arguments.contains("--notes")
+        let bundle = notes ? "com.apple.Notes" : "com.apple.TextEdit"
+        r["app"] = notes ? "Notes" : "TextEdit"
+        do {
+            if notes {
+                _ = try await Shell.osascript("""
+                tell application "Notes"
+                    activate
+                    set n to make new note at folder "Notes" with properties {name:"Llasso box test", body:"<div>Line one stays.</div><div>Line two goes.</div><div>Line three goes too.</div><div>Line four stays.</div>"}
+                    show n
+                end tell
+                """)
+            } else {
+                _ = try await Shell.osascript("""
+                tell application "TextEdit"
+                    activate
+                    make new document
+                    set text of front document to "\(original)"
+                end tell
+                """)
+            }
+            try await Task.sleep(nanoseconds: 2_000_000_000)
+            guard let te = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first else {
+                throw ActionError.failed("\(bundle) didn't start")
+            }
+            let appEl = AXUIElementCreateApplication(te.processIdentifier)
+            guard let area = Self.textArea(containing: "Line two goes.", in: appEl, depth: 0)
+                    ?? (ContextReader.attr(appEl, kAXFocusedUIElementAttribute) as AXUIElement?) else { throw ActionError.failed("no text area") }
+            // Caret at the start, nothing selected.
+            ContextReader.select(BoxedRange(location: 0, length: 0), in: area)
+            // The box: across lines two and three, in AppKit coordinates.
+            let before: String = ContextReader.attr(area, kAXValueAttribute) ?? original
+            func bounds(_ loc: Int, _ len: Int) -> CGRect? {
+                var cf = CFRange(location: loc, length: len)
+                var out: CFTypeRef?
+                guard let v = AXValueCreate(.cfRange, &cf),
+                      AXUIElementCopyParameterizedAttributeValue(area, kAXBoundsForRangeParameterizedAttribute as CFString, v, &out) == .success,
+                      let out else { return nil }
+                var rect = CGRect.zero
+                AXValueGetValue(out as! AXValue, .cgRect, &rect)
+                return rect
+            }
+            let two = (before as NSString).range(of: "Line two goes.")
+            let three = (before as NSString).range(of: "Line three goes too.")
+            guard let b2 = bounds(two.location, two.length), let b3 = bounds(three.location, three.length) else { throw ActionError.failed("no bounds for the lines") }
+            let tl = b2.union(b3)
+            let mainHeight = NSScreen.screens.first?.frame.height ?? 0
+            let box = CGRect(x: tl.minX - 4, y: mainHeight - tl.maxY, width: tl.width + 60, height: tl.height).insetBy(dx: 0, dy: 3)
+            r["box"] = "\(box)"
+            r["bounds top-left"] = "\(tl)"
+            r["text before"] = before
+            r["index at top"] = ContextReader.index(area, at: CGPoint(x: tl.minX + 6, y: tl.minY + 6)) ?? -1
+            r["index at bottom"] = ContextReader.index(area, at: CGPoint(x: tl.maxX - 6, y: tl.maxY - 6)) ?? -1
+            // Llasso in front, as when its Settings window was open.
+            SettingsWindow.show()
+            try await Task.sleep(nanoseconds: 800_000_000)
+            r["front before"] = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
+            let under = Controller.app(under: box)
+            r["app under box"] = under?.localizedName ?? "none"
+            let ctx = ContextReader.read(app: under, selection: box)
+            r["boxed text"] = ctx.selectedText ?? ""
+            r["boxed range"] = ctx.boxedRange.map { "\($0.location)+\($0.length)" } ?? "none"
+            r["destinations"] = Actuator.destinations(for: .text(text: "x", summary: ""), context: ctx).map(\.label)
+            _ = try await Actuator.text("Line two is new.\nLine three is new too.\n", to: .replaceInPlace(app: "TextEdit"), context: ctx, app: under)
+            try await Task.sleep(nanoseconds: 500_000_000)
+            let after: String = ContextReader.attr(area, kAXValueAttribute) ?? "?"
+            r["after"] = after
+            r["pass"] = under?.bundleIdentifier == bundle
+                && ctx.selectedText == "Line two goes.\nLine three goes too.\n"
+                && after == before.replacingOccurrences(of: "Line two goes.\nLine three goes too.\n", with: "Line two is new.\nLine three is new too.\n")
+        } catch {
+            r["error"] = error.localizedDescription
+            r["pass"] = false
+        }
+        if notes {
+            _ = try? await Shell.osascript("tell application \"Notes\" to delete (every note whose name is \"Llasso box test\")")
+        } else {
+            _ = try? await Shell.osascript("tell application \"TextEdit\" to close front document saving no")
+        }
+        write(r, notes ? "boxtest-notes.json" : "boxtest.json")
+    }
+
+    /// The first text area under `el` whose text contains `needle`.
+    static func textArea(containing needle: String, in el: AXUIElement, depth: Int) -> AXUIElement? {
+        guard depth < 14 else { return nil }
+        if (ContextReader.attr(el, kAXRoleAttribute) as String?) == "AXTextArea",
+           let v: String = ContextReader.attr(el, kAXValueAttribute), v.contains(needle) { return el }
+        let kids: [AXUIElement] = ContextReader.attr(el, kAXChildrenAttribute) ?? []
+        for k in kids { if let hit = textArea(containing: needle, in: k, depth: depth + 1) { return hit } }
+        return nil
     }
 
     static func act() async {

@@ -131,6 +131,15 @@ enum Actuator {
         guard let app else { throw ActionError.failed("The app has closed.") }
         try await bringForward(app)
         let appEl = AXUIElementCreateApplication(app.processIdentifier)
+        // Nothing was selected when the box was drawn: select the boxed lines again first, and
+        // check they still read the same, so the change lands on exactly that text.
+        if let range = c.boxedRange, let point = c.boxPoint {
+            guard let el = ContextReader.textElement(appEl, at: point), ContextReader.select(range, in: el),
+                  ContextReader.string(el, range) == c.selectedText else {
+                throw ActionError.failed("The text in \(c.appName ?? "the app") has moved or changed since the box was drawn. Copy it instead.")
+            }
+            try await Task.sleep(nanoseconds: 120_000_000)
+        }
         let focused: AXUIElement? = ContextReader.attr(appEl, kAXFocusedUIElementAttribute)
         // Native text views keep the selection's style when Accessibility swaps its text.
         // Web pages don't, so they always take a styled paste instead.

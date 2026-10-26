@@ -104,13 +104,26 @@ enum ContextReader {
             if let selected: String = attr(focused, kAXSelectedTextAttribute), !selected.isEmpty {
                 ctx.selectedText = selected
                 ctx.canReplaceText = settable(focused, kAXSelectedTextAttribute) || editable(focused)
-            } else if role == "AXTextField" || role == "AXTextArea" || role == "AXComboBox",
+            } else if let found = boxedLines(appEl, selection: selection) {
+                // Nothing selected: the lines of editable text the box covers can be replaced.
+                ctx.selectedText = found.text
+                ctx.boxedRange = found.range
+                ctx.boxPoint = found.point
+                ctx.canReplaceText = true
+            } else if role == "AXTextField" || role == "AXComboBox" || (role == "AXTextArea" && frameInside(focused, selection)),
                       let value: String = attr(focused, kAXValueAttribute), value.count < 20_000,
                       settable(focused, kAXValueAttribute), frameIntersects(focused, selection) {
-                // A plain field the box covers: its whole value can be rewritten.
+                // A plain field the box covers: its whole value can be rewritten. A text area
+                // counts only when the box takes in all of it, so a note is never rewritten whole.
                 ctx.fieldValue = value
                 ctx.canSetField = true
             }
+        }
+        if ctx.selectedText == nil && !ctx.canSetField, let found = boxedLines(appEl, selection: selection) {
+            ctx.selectedText = found.text
+            ctx.boxedRange = found.range
+            ctx.boxPoint = found.point
+            ctx.canReplaceText = true
         }
         if let sheetApp = Sheets.app(for: app.bundleIdentifier) { ctx.sheet = Sheets.read(sheetApp) }
 
@@ -130,6 +143,83 @@ enum ContextReader {
             }
         }
         return ctx
+    }
+
+    /// With nothing selected, find the editable text the box covers (a note, a document, a
+    /// message being written) and the whole lines inside it, so they can be replaced in place.
+    static func boxedLines(_ appEl: AXUIElement, selection: CGRect) -> (text: String, range: BoxedRange, point: CGPoint)? {
+        let mainHeight = NSScreen.screens.first?.frame.height ?? 0
+        let r = Geometry.topLeftGlobal(selection, mainScreenHeight: mainHeight)
+        let centre = CGPoint(x: r.midX, y: r.midY)
+        guard let el = textElement(appEl, at: centre) else { return nil }
+        let inset = CGPoint(x: min(6, r.width / 4), y: min(6, r.height / 4))
+        // A point past the end of a short line reads as index 0, so the bottom edge is sampled
+        // at three places and the furthest index wins.
+        guard let a = index(el, at: CGPoint(x: r.minX + inset.x, y: r.minY + inset.y)) else { return nil }
+        let b = [r.minX + inset.x, r.midX, r.maxX - inset.x].compactMap { index(el, at: CGPoint(x: $0, y: r.maxY - inset.y)) }.max() ?? a
+        guard let first = lineRange(el, containing: a), let last = lineRange(el, containing: max(a, b)) else { return nil }
+        let range = BoxedRange(location: first.location, length: last.location + last.length - first.location)
+        guard range.length > 0, range.length < 20_000, let text = string(el, range),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return (text, range, centre)
+    }
+
+    /// The editable text element at a point (top-left global): the hit element or its nearest
+    /// text-area ancestor, which must let Llasso set its selection.
+    static func textElement(_ appEl: AXUIElement, at p: CGPoint) -> AXUIElement? {
+        var hit: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(appEl, Float(p.x), Float(p.y), &hit) == .success else { return nil }
+        var current = hit
+        for _ in 0..<8 {
+            guard let node = current else { return nil }
+            let role: String? = attr(node, kAXRoleAttribute)
+            if role == "AXTextArea" || role == "AXTextField" || (attr(node, "AXEditableAncestor") as AXUIElement?) != nil,
+               settable(node, kAXSelectedTextRangeAttribute) {
+                return node
+            }
+            current = attr(node, kAXParentAttribute)
+        }
+        return nil
+    }
+
+    static func index(_ el: AXUIElement, at p: CGPoint) -> Int? {
+        var point = p
+        guard let v = AXValueCreate(.cgPoint, &point) else { return nil }
+        var out: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(el, kAXRangeForPositionParameterizedAttribute as CFString, v, &out) == .success,
+              let out, CFGetTypeID(out) == AXValueGetTypeID() else { return nil }
+        var range = CFRange()
+        return AXValueGetValue(out as! AXValue, .cfRange, &range) ? range.location : nil
+    }
+
+    static func lineRange(_ el: AXUIElement, containing i: Int) -> BoxedRange? {
+        var lineRef: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(el, kAXLineForIndexParameterizedAttribute as CFString, i as CFNumber, &lineRef) == .success,
+              let line = lineRef as? Int else { return nil }
+        var out: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(el, kAXRangeForLineParameterizedAttribute as CFString, line as CFNumber, &out) == .success,
+              let out, CFGetTypeID(out) == AXValueGetTypeID() else { return nil }
+        var range = CFRange()
+        guard AXValueGetValue(out as! AXValue, .cfRange, &range) else { return nil }
+        return BoxedRange(location: range.location, length: range.length)
+    }
+
+    static func string(_ el: AXUIElement, _ r: BoxedRange) -> String? {
+        var cf = CFRange(location: r.location, length: r.length)
+        guard let v = AXValueCreate(.cfRange, &cf) else { return nil }
+        var out: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(el, kAXStringForRangeParameterizedAttribute as CFString, v, &out) == .success
+        else { return nil }
+        return out as? String
+    }
+
+    /// Select a range in a text element and give it focus, so the next edit lands there.
+    @discardableResult
+    static func select(_ r: BoxedRange, in el: AXUIElement) -> Bool {
+        _ = AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        var cf = CFRange(location: r.location, length: r.length)
+        guard let v = AXValueCreate(.cfRange, &cf) else { return false }
+        return AXUIElementSetAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, v) == .success
     }
 
     private static var woken = Set<pid_t>()
@@ -169,6 +259,20 @@ enum ContextReader {
         let mainHeight = NSScreen.screens.first?.frame.height ?? 0
         let topLeftBox = Geometry.topLeftGlobal(box, mainScreenHeight: mainHeight)
         return CGRect(origin: pos, size: size).intersects(topLeftBox)
+    }
+
+    /// Whether the element sits wholly inside the box (AppKit global coordinates).
+    static func frameInside(_ el: AXUIElement, _ box: CGRect) -> Bool {
+        var posRef: CFTypeRef?, sizeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, kAXPositionAttribute as CFString, &posRef) == .success,
+              AXUIElementCopyAttributeValue(el, kAXSizeAttribute as CFString, &sizeRef) == .success,
+              let posRef, let sizeRef else { return false }
+        var pos = CGPoint.zero, size = CGSize.zero
+        AXValueGetValue(posRef as! AXValue, .cgPoint, &pos)
+        AXValueGetValue(sizeRef as! AXValue, .cgSize, &size)
+        let mainHeight = NSScreen.screens.first?.frame.height ?? 0
+        return Geometry.topLeftGlobal(box, mainScreenHeight: mainHeight).insetBy(dx: -8, dy: -8)
+            .contains(CGRect(origin: pos, size: size))
     }
 
     /// "AXButton 'Save'" style line, or nil for anonymous containers.

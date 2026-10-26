@@ -69,6 +69,15 @@ extension SelfTest {
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 await shoot(CGRect(x: v.maxX - 640, y: v.maxY - 620, width: 640, height: 620), "look-\(name)-7b-clip")
             }
+            // Text that can go back in place asks first.
+            var t = ProposalCard(summary: "Translated into French", destinations: [.replaceInPlace(app: "Notes"), .copy, .newDocument, .saveAs])
+            t.text = "Trois jours sur la Tay avec un carnet de croquis et un thermos."
+            t.original = "Three days on the Tay with a sketchbook and a thermos."
+            t.ask = "Replace the boxed text in Notes with this?"
+            job.card.proposal = t
+            job.show()
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            await shoot(CGRect(x: v.maxX - 640, y: v.maxY - 560, width: 640, height: 560), "look-\(name)-7c-ask")
             job.close()
             backdrop.orderOut(nil)
 

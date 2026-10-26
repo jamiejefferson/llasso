@@ -358,6 +358,18 @@ final class Controller {
         window.selectionView.mode = .holding
         phase = .prompting
 
+        // Llasso's own Settings or card may have been in front: the box belongs to the app
+        // whose window is under it.
+        if frontApp == nil || frontApp?.processIdentifier == ProcessInfo.processInfo.processIdentifier,
+           let under = Self.app(under: global) {
+            if Sensitive.isSensitive(bundleID: under.bundleIdentifier) {
+                cancel()
+                Toast.show("Llasso is off while \(under.localizedName ?? "this app") is in front.")
+                return
+            }
+            frontApp = under
+            Log.write("box over \(under.localizedName ?? "?") (Llasso was in front)")
+        }
         context = ScreenContext(appName: frontApp?.localizedName, bundleID: frontApp?.bundleIdentifier)
         let app = frontApp
         // Read accessibility context off the main thread; slow apps can take a moment.
@@ -381,6 +393,27 @@ final class Controller {
 
         showPill(near: global, on: screen)
         startPauseTimer()
+    }
+
+    /// The app owning the frontmost ordinary window under the middle of a box (AppKit global).
+    static func app(under box: CGRect) -> NSRunningApplication? {
+        let mainHeight = NSScreen.screens.first?.frame.height ?? 0
+        let r = Geometry.topLeftGlobal(box, mainScreenHeight: mainHeight)
+        let centre = CGPoint(x: r.midX, y: r.midY)
+        let me = ProcessInfo.processInfo.processIdentifier
+        guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
+        else { return nil }
+        for w in windows {
+            guard (w[kCGWindowLayer as String] as? Int) == 0,
+                  let pid = w[kCGWindowOwnerPID as String] as? pid_t, pid != me,
+                  let b = w[kCGWindowBounds as String] as? [String: CGFloat],
+                  CGRect(x: b["X"] ?? 0, y: b["Y"] ?? 0, width: b["Width"] ?? 0, height: b["Height"] ?? 0).contains(centre),
+                  (w[kCGWindowAlpha as String] as? Double ?? 1) > 0.05,
+                  let app = NSRunningApplication(processIdentifier: pid), app.activationPolicy == .regular
+            else { continue }   // invisible overlays and background helpers aren't what the box is on
+            return app
+        }
+        return nil
     }
 
     /// Start the app's MCP server in the background while the user talks.

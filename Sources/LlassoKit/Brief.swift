@@ -1,10 +1,18 @@
 import Foundation
+import CoreGraphics
 
 /// The four quick verbs on the prompt pill.
 public enum Verb: String, CaseIterable, Sendable {
     case explain, fix, change, make
 
     public var label: String { rawValue.capitalized }
+}
+
+/// A run of characters in an app's text, as Accessibility counts them.
+public struct BoxedRange: Sendable, Equatable {
+    public var location: Int
+    public var length: Int
+    public init(location: Int, length: Int) { self.location = location; self.length = length }
 }
 
 /// What Llasso knows about the boxed area besides its pixels.
@@ -27,6 +35,11 @@ public struct ScreenContext: Sendable, Equatable {
     public var canReplaceText = false
     /// The focused element is a plain text field whose whole value Llasso can set.
     public var canSetField = false
+    /// Nothing was selected, so Llasso found the lines of editable text the box covers:
+    /// `selectedText` holds them, and Llasso selects this range again before replacing it.
+    public var boxedRange: BoxedRange?
+    /// A point inside the box, top-left global, to find that text element again.
+    public var boxPoint: CGPoint?
 
     public static let browserBundles: Set<String> = ["com.google.Chrome", "com.apple.Safari", "company.thebrowser.Browser",
                                               "com.brave.Browser", "com.microsoft.edgemac", "org.mozilla.firefox"]
@@ -163,7 +176,8 @@ public enum Brief {
         if let v = context.url { lines.append("- URL: \(v)") }
         lines.append("- Llasso's guess at what the box holds: \(context.kind.rawValue)")
         if let v = context.selectedText, !v.isEmpty {
-            lines.append("- Selected text: \(String(v.prefix(4000)))")
+            lines.append((context.boxedRange != nil ? "- Text inside the box (nothing is selected; Llasso can replace exactly these lines): "
+                          : "- Selected text: ") + String(v.prefix(4000)))
         } else if let v = context.fieldValue, !v.isEmpty {
             lines.append("- Text of the focused field: \(String(v.prefix(4000)))")
         }
