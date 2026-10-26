@@ -47,7 +47,7 @@ extension SelfTest {
             job.card.title = "Warm the sky up"
             job.card.working = "Editing the image…"
             try? await Task.sleep(nanoseconds: 700_000_000)
-            let side = CGRect(x: v.maxX - 640, y: v.midY - 260, width: 640, height: 420)
+            let side = CGRect(x: v.maxX - 640, y: v.maxY - 420, width: 640, height: 420)
             await shoot(side, "look-\(name)-6-working")
             // The answer arrives: the card comes up at the side by itself.
             job.card.working = nil

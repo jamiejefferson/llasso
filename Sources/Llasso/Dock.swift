@@ -2,18 +2,19 @@ import AppKit
 import SwiftUI
 
 /// The Working chips: one small glass chip per request that is running, or waiting on the user,
-/// with its card out of sight. They stack at the right edge of the screen, out of the way of
-/// whatever the user does next. A click on a chip brings its card up beside it.
+/// with its card out of sight. They stack at the top right of the screen, just under the menu
+/// bar, where they mostly cover an app's title bar and toolbar rather than its content. A click on a chip brings its card up beside it.
 @MainActor
 final class WorkingDock: ObservableObject {
     static let shared = WorkingDock()
     @Published private(set) var jobs: [Job] = []
     private var panel: FloatingPanel?
 
-    static let width: CGFloat = 150
+    static let width: CGFloat = 170
     static let rowHeight: CGFloat = 40
-    /// Gap between the chips and the screen's right edge.
+    /// Gap between the chips and the screen's right and top edges.
     static let inset: CGFloat = 12
+    static let top: CGFloat = 8
 
     func refresh() {
         let waiting = Controller.shared.jobs.reversed().filter { j in
@@ -26,7 +27,7 @@ final class WorkingDock: ObservableObject {
         let height = CGFloat(jobs.count) * Self.rowHeight + 2 * Glass.margin
         let v = screen.visibleFrame
         let frame = CGRect(x: v.maxX - Self.inset - Self.width - Glass.margin,
-                           y: v.midY + 80 + Glass.margin - height,
+                           y: v.maxY - Self.top + Glass.margin - height,
                            width: Self.width + 2 * Glass.margin, height: height)
         if panel.frame != frame { panel.setFrame(frame, display: true) }
         panel.orderFrontRegardless()
@@ -37,7 +38,7 @@ final class WorkingDock: ObservableObject {
     func placeCard(_ card: FloatingPanel, on screen: NSScreen) {
         let v = screen.visibleFrame
         let showing = Controller.shared.jobs.filter(\.isVisible).count
-        let top = min(v.maxY - 8, v.midY + 80 + Glass.margin + CGFloat(showing) * 28)
+        let top = v.maxY - Self.top + Glass.margin - CGFloat(showing) * 28
         card.setFrameOrigin(CGPoint(x: v.maxX - card.frame.width + Glass.margin - Self.inset,
                                     y: top - card.frame.height))
     }
@@ -72,13 +73,14 @@ struct DockView: View {
     }
 }
 
-/// "Working" with a turning arc, or "Needs you" with an accent-coloured dot when the job is waiting.
+/// The Llasso mark, then "Working" with a turning arc, or "Needs you" with an accent-coloured dot when the job is waiting.
 struct DockChip: View {
     let job: Job
     @ObservedObject var card: CardModel
 
     var body: some View {
         HStack(spacing: 8) {
+            MarkShape().fill(Color.llInk).frame(width: 18, height: 10)
             if job.needsYou {
                 Circle().fill(Color.llAlert).frame(width: 8, height: 8)
             } else {
