@@ -12,6 +12,8 @@ The microphone is on only while you hold the mic on the prompt; releasing sends.
 
 Several requests can run at once. A sent request shrinks to a Working chip at the screen edge, and its card comes up when it finishes. The menu bar icon counts jobs that are running or waiting on you, and clicking it lists every task and brings its card back.
 
+Feedback: Send feedback… in the menu bar sends a note (feedback, bug or idea, with an optional email and screenshot) to the `llasso_feedback` table in Supabase, defined in `supabase/llasso_feedback.sql`. The app's key can add rows and nothing else. A copy stays in `feedback.md` in the history folder.
+
 ## Build and run
 
     ./build.sh            # builds ~/Applications/Llasso.app
@@ -33,6 +35,7 @@ First run: paste an OpenRouter key in Settings, then allow Screen Recording, Mic
     open ~/Applications/Llasso.app --args --jobtest        # two jobs at once, a click away mid-job; writes jobtest.json
     open ~/Applications/Llasso.app --args --pastetest      # replaces a selection in a Chrome page by paste, then undoes it; writes pastetest.json
     open ~/Applications/Llasso.app --args --looktest       # the marquee, prompt and card on light and dark; writes look-*.png
+    open ~/Applications/Llasso.app --args --feedbacktest   # pictures the form as feedback-form.png; add --send to post a test note
     open ~/Applications/Llasso.app --args --drawtest       # draws a box by ⌘-drag, ⌃⌥S and the menu, and checks a
                                                            # ⌘-click reaches the app; writes drawtest.json
     open ~/Applications/Llasso.app --args --savetest       # opens Save to… over the overlay and checks it sits on top
