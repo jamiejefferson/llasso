@@ -7,17 +7,15 @@ import LlassoKit
 // light that runs round it, and clean white or black frosted glass for the panels.
 
 extension Palette {
-    static let gold = NSColor(srgbRed: 0.867, green: 0.698, blue: 0.306, alpha: 1)        // #DDB24E dots
     /// The marquee's dashes and the spark that runs round it.
     static let ant = NSColor.white
     static let glint = NSColor.white
-    /// Gold for marks and text: deeper on light glass, brighter on dark.
-    static let accent = dynamic(light: NSColor(srgbRed: 0.722, green: 0.525, blue: 0.165, alpha: 1),   // #B8862A
-                                dark: NSColor(srgbRed: 0.91, green: 0.769, blue: 0.416, alpha: 1))     // #E8C46A
     static let text = dynamic(light: NSColor(srgbRed: 0.078, green: 0.071, blue: 0.063, alpha: 1),
                               dark: NSColor(srgbRed: 0.961, green: 0.953, blue: 0.933, alpha: 1))
     static let subtext = dynamic(light: NSColor(white: 0.30, alpha: 1), dark: NSColor(white: 0.76, alpha: 1))
     static let faint = dynamic(light: NSColor(white: 0.45, alpha: 1), dark: NSColor(white: 0.56, alpha: 1))
+    /// "Needs you": the accent colour chosen in System Settings, as macOS uses for attention.
+    static let alert = NSColor.controlAccentColor
     static let positive = dynamic(light: NSColor(srgbRed: 0.12, green: 0.54, blue: 0.30, alpha: 1), dark: ok)
 
     static func dynamic(light: NSColor, dark: NSColor) -> NSColor {
@@ -304,21 +302,19 @@ struct VisualEffect: NSViewRepresentable {
 }
 
 extension Color {
-    static let llGold = Color(nsColor: Palette.accent)
-    static let llDot = Color(nsColor: Palette.gold)
+    /// Dotted threads, level bars and the working arc.
+    static let llThread = Color(nsColor: Palette.faint)
+    static let llAlert = Color(nsColor: Palette.alert)
     static let llText = Color(nsColor: Palette.text)
     static let llSub = Color(nsColor: Palette.subtext)
     static let llFaint = Color(nsColor: Palette.faint)
     static let llPositive = Color(nsColor: Palette.positive)
     static let llWell = Color(nsColor: Palette.dynamic(light: NSColor(white: 0, alpha: 0.05),
                                                        dark: NSColor(white: 1, alpha: 0.07)))
-    /// Primary buttons and selected chips: solid black on light glass, solid white on dark.
+    /// The Llasso mark, primary buttons and selected chips: solid black on light glass, solid white on dark.
     static let llInk = Color(nsColor: Palette.text)
     /// Text on an ink button.
     static let llOnInk = Color(nsColor: Palette.dynamic(light: .white, dark: NSColor(white: 0.06, alpha: 1)))
-    /// Text on a gold chip.
-    static let llOnGold = Color(nsColor: Palette.dynamic(light: .white,
-                                                         dark: NSColor(srgbRed: 0.078, green: 0.071, blue: 0.063, alpha: 1)))
     static let llHair = Color(nsColor: Palette.dynamic(light: NSColor(white: 0, alpha: 0.16),
                                                        dark: NSColor(white: 1, alpha: 0.18)))
     static let llDanger = Color(nsColor: Palette.dynamic(light: NSColor(srgbRed: 0.75, green: 0.25, blue: 0.2, alpha: 1),
@@ -332,8 +328,7 @@ enum Glass {
 }
 
 /// Frosted glass that follows the system theme: clean white glass in light mode, clean black
-/// glass in dark mode, each with a neutral hairline and a soft shadow. Gold is kept for the
-/// lasso and the mark. `amount` (0...1) frosts the glass in; `edge` fades in the hairline.
+/// glass in dark mode, each with a neutral hairline and a soft shadow. `amount` (0...1) frosts the glass in; `edge` fades in the hairline.
 struct GlassBackground: ViewModifier {
     @Environment(\.colorScheme) private var scheme
     var radius: CGFloat = Glass.radius

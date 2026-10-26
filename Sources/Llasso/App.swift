@@ -169,7 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusItem?.length = title.isEmpty ? NSStatusItem.squareLength : NSStatusItem.variableLength
             statusItem?.button?.title = title
         }
-        statusItem?.button?.contentTintColor = waiting > 0 ? Palette.gold : nil
+        statusItem?.button?.contentTintColor = waiting > 0 ? Palette.alert : nil
     }
 
     @objc private func statusClicked(_ sender: NSStatusBarButton) {

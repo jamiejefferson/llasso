@@ -160,7 +160,7 @@ struct JobRow: View {
                         .font(.system(size: 12)).foregroundColor(.secondary).lineLimit(2)
                 }
                 Text([label, job.appName, Self.ago(job.started)].filter { !$0.isEmpty }.joined(separator: " · "))
-                    .font(.system(size: 11)).foregroundColor(status == .needsYou ? .llGold : Color(nsColor: .tertiaryLabelColor))
+                    .font(.system(size: 11)).foregroundColor(status == .needsYou ? .llAlert : Color(nsColor: .tertiaryLabelColor))
             }
             Spacer(minLength: 0)
             if status == .working {
@@ -210,7 +210,7 @@ struct EarlierRow: View {
     }
 }
 
-/// 0 working (a turning gold arc), 1 needs you (gold dot), 2 done (green tick), 3 stopped (grey cross).
+/// 0 working (a turning grey arc), 1 needs you (an accent-coloured dot), 2 done (green tick), 3 stopped (grey cross).
 struct StatusMark: View {
     let status: Int
 
@@ -219,10 +219,10 @@ struct StatusMark: View {
             switch status {
             case 0:
                 TimelineView(.animation) { t in
-                    Circle().trim(from: 0, to: 0.7).stroke(Color.llGold, style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
+                    Circle().trim(from: 0, to: 0.7).stroke(Color.llThread, style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
                         .rotationEffect(.degrees(t.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1) * 360))
                 }
-            case 1: Circle().fill(Color.llGold).frame(width: 8, height: 8)
+            case 1: Circle().fill(Color.llAlert).frame(width: 8, height: 8)
             case 2: Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundColor(.llPositive)
             default: Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundColor(Color(nsColor: .tertiaryLabelColor))
             }

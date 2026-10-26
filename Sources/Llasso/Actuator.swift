@@ -659,7 +659,7 @@ enum Shell {
     }
 }
 
-/// An amber ring with a label, shown where the model points.
+/// A dotted ring with a label, shown where the model points: white over a dark glow, like the marquee.
 @MainActor
 enum Pointer {
     private static var panels: [NSPanel] = []
@@ -698,17 +698,17 @@ enum Pointer {
             let path = NSBezierPath(ovalIn: r)
             NSGraphicsContext.saveGraphicsState()
             let glow = NSShadow()
-            glow.shadowColor = Palette.gold.withAlphaComponent(0.8)
+            glow.shadowColor = NSColor(white: 0, alpha: 0.6)
             glow.shadowBlurRadius = 6
             glow.set()
-            Palette.gold.withAlphaComponent(0.35).setStroke()
+            NSColor(white: 0, alpha: 0.35).setStroke()
             path.lineWidth = 2
             path.stroke()
             NSGraphicsContext.restoreGraphicsState()
             path.lineWidth = 1.5
             path.lineCapStyle = .round
             path.setLineDash([0.01, 4], count: 2, phase: 0)
-            Palette.gold.setStroke()
+            Palette.ant.setStroke()
             path.stroke()
             let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13, weight: .semibold),
                                                         .foregroundColor: NSColor(white: 0.08, alpha: 1)]
@@ -718,8 +718,8 @@ enum Pointer {
             let shape = NSBezierPath(roundedRect: pill, xRadius: 12, yRadius: 12)
             NSColor(white: 1, alpha: 0.92).setFill()
             shape.fill()
-            Palette.gold.setStroke()
-            shape.lineWidth = 1
+            NSColor(white: 0, alpha: 0.18).setStroke()
+            shape.lineWidth = 0.5
             shape.stroke()
             text.draw(in: pill.insetBy(dx: 10, dy: 4))
         }

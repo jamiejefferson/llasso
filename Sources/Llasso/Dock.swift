@@ -72,7 +72,7 @@ struct DockView: View {
     }
 }
 
-/// "Working" with a turning arc, or "Needs you" with a gold dot when the job is waiting.
+/// "Working" with a turning arc, or "Needs you" with an accent-coloured dot when the job is waiting.
 struct DockChip: View {
     let job: Job
     @ObservedObject var card: CardModel
@@ -80,7 +80,7 @@ struct DockChip: View {
     var body: some View {
         HStack(spacing: 8) {
             if job.needsYou {
-                Circle().fill(Color.llDot).frame(width: 8, height: 8)
+                Circle().fill(Color.llAlert).frame(width: 8, height: 8)
             } else {
                 StatusMark(status: 0)
             }

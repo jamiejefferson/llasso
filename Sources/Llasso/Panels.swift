@@ -196,8 +196,8 @@ struct PillView: View {
         let startY = model.micOffset.y - Glass.margin
         let style = StrokeStyle(lineWidth: 1, lineCap: .round, dash: [0.01, 4])
         return ZStack {
-            HalfLoop(top: true, startY: startY).trim(from: 0, to: model.thread).stroke(Color.llDot, style: style)
-            HalfLoop(top: false, startY: startY).trim(from: 0, to: model.thread).stroke(Color.llDot, style: style)
+            HalfLoop(top: true, startY: startY).trim(from: 0, to: model.thread).stroke(Color.llThread, style: style)
+            HalfLoop(top: false, startY: startY).trim(from: 0, to: model.thread).stroke(Color.llThread, style: style)
         }
         .opacity(1 - model.content)
         .allowsHitTesting(false)
@@ -212,7 +212,7 @@ struct LevelBars: View {
     var body: some View {
         HStack(alignment: .center, spacing: 2) {
             ForEach(0..<5, id: \.self) { i in
-                Capsule().fill(Color.llDot)
+                Capsule().fill(Color.llThread)
                     .frame(width: 3, height: 3 + 13 * max(0.08, level * Self.shape[i]))
             }
         }
@@ -232,12 +232,12 @@ struct MicBadge: View {
     var body: some View {
         ZStack {
             if listening {
-                Circle().stroke(Color.llDot, style: StrokeStyle(lineWidth: 1, lineCap: .round, dash: [0.01, 3.5]))
+                Circle().stroke(Color.llThread, style: StrokeStyle(lineWidth: 1, lineCap: .round, dash: [0.01, 3.5]))
                     .frame(width: 44, height: 44)
                     .scaleEffect(pulse.on ? 1.15 : 0.9)
                     .opacity(pulse.on ? 0.2 : 0.8)
             }
-            MarkShape().fill(Color.llGold).frame(width: 26, height: 15)
+            MarkShape().fill(Color.llInk).frame(width: 26, height: 15)
         }
         .frame(width: 30, height: 30)
         .onAppear {
@@ -314,7 +314,7 @@ struct CardView: View {
 
     private var dot: Color {
         switch model.state {
-        case .thinking, .streaming: return .llGold
+        case .thinking, .streaming: return .llThread
         case .done: return .llPositive
         case .failed: return .llDanger
         }
