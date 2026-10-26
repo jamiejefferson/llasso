@@ -267,21 +267,47 @@ struct SettingsView: View {
     @ObservedObject private var settings = Settings.shared
     @ObservedObject private var form = SettingsForm()
     @ObservedObject private var integrations = Integrations.shared
+    /// The look test sets this to show the first-run state on a Mac that has a key.
+    var showsNoKey = false
+    private var hasKey: Bool { settings.hasKey && !showsNoKey }
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
         Form {
             Section("OpenRouter") {
-                HStack {
-                    SecureField(settings.hasKey ? "Key saved. Paste a new one to replace it" : "Paste your OpenRouter key (sk-or-…)",
-                                text: $form.key)
-                    Button(form.saved ? "Saved" : "Save") {
-                        settings.saveKey(form.key)
-                        form.key = ""
-                        form.saved = true
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(hasKey ? "Your key" : "Paste your OpenRouter key")
+                        .font(.headline)
+                    // A plain bordered box with no example key in it, so it reads as somewhere to paste.
+                    HStack(spacing: 8) {
+                        SecureField("", text: $form.key,
+                                    prompt: Text(hasKey ? "Paste a new key to replace the saved one" : "Click here, then press ⌘V"))
+                            .labelsHidden()
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 14))
+                            .padding(.horizontal, 10)
+                            .frame(height: 34)
+                            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8)
+                                .strokeBorder(hasKey ? Color.secondary.opacity(0.5) : Color.accentColor, lineWidth: 1.5))
+                            .onSubmit(saveKey)
+                        Button("Save", action: saveKey)
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.large)
+                            .disabled(form.key.isEmpty)
                     }
-                    .disabled(form.key.isEmpty)
+                    if hasKey {
+                        Label(form.saved ? "Saved. Llasso is ready." : "A key is saved in your Keychain.", systemImage: "checkmark.circle.fill")
+                            .font(.callout).foregroundStyle(.green)
+                    } else {
+                        HStack(spacing: 4) {
+                            Text("No key yet?").foregroundStyle(.secondary)
+                            Link("Create one at openrouter.ai/keys", destination: URL(string: "https://openrouter.ai/keys")!)
+                        }
+                        .font(.callout)
+                    }
                 }
+                .padding(.vertical, 4)
                 TextField("Model", text: $settings.model)
                 Text("Any OpenRouter model that reads images and calls tools. Default: \(Settings.defaultModel).")
                     .font(.caption).foregroundStyle(.secondary)
@@ -357,6 +383,13 @@ struct SettingsView: View {
         .onReceive(timer) { _ in
             form.refresh()
         }
+    }
+
+    private func saveKey() {
+        guard !form.key.isEmpty else { return }
+        settings.saveKey(form.key)
+        form.key = ""
+        form.saved = true
     }
 
     private func permission(_ name: String, ok: Bool, need: String, grant: @escaping () -> Void) -> some View {

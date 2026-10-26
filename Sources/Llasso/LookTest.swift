@@ -57,6 +57,19 @@ extension SelfTest {
             await shoot(side, "look-\(name)-7-card")
             job.close()
             backdrop.orderOut(nil)
+
+            // Settings, first run and with a key saved: the key field should read as a place to paste.
+            for noKey in [true, false] {
+                let w = NSWindow(contentRect: CGRect(x: v.midX - 260, y: v.maxY - 760, width: 520, height: 720),
+                                 styleMask: [.titled, .closable], backing: .buffered, defer: false)
+                w.title = "Llasso Settings"
+                w.isReleasedWhenClosed = false
+                w.contentView = NSHostingView(rootView: SettingsView(showsNoKey: noKey))
+                w.orderFrontRegardless()
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                await shoot(w.frame, "look-\(name)-8-settings-\(noKey ? "nokey" : "saved")")
+                w.orderOut(nil)
+            }
         }
         NSApp.appearance = nil
     }
