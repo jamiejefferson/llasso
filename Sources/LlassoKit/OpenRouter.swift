@@ -95,6 +95,7 @@ public enum OpenRouterError: Error, LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .missingKey: return "Add your OpenRouter key in Llasso's settings."
+        case .http(401, _): return "OpenRouter didn't accept your key. Paste it again in Llasso's settings."
         case .http(let code, let body): return "OpenRouter answered \(code): \(body)"
         case .api(let message): return "OpenRouter: \(message)"
         }
@@ -191,6 +192,26 @@ public struct OpenRouterClient: Sendable {
     public init(apiKey: String, baseURL: URL = URL(string: "https://openrouter.ai/api/v1")!) {
         self.apiKey = apiKey
         self.baseURL = baseURL
+    }
+
+    /// A pasted key with the wrapping people copy along with it removed: spaces, quotes, "Bearer ".
+    public static func cleanKey(_ raw: String) -> String {
+        let wrapping = CharacterSet(charactersIn: "\"'`\u{201C}\u{201D}\u{2018}\u{2019}").union(.whitespacesAndNewlines)
+        var key = raw.trimmingCharacters(in: wrapping)
+        if key.lowercased().hasPrefix("bearer ") { key = String(key.dropFirst(7)) }
+        return key.trimmingCharacters(in: wrapping)
+    }
+
+    /// Why OpenRouter won't take this key, or nil when it does. A network failure counts as
+    /// fine, so a key can be saved offline.
+    public func keyProblem() async -> String? {
+        guard apiKey.hasPrefix("sk-or-") else { return "That isn't an OpenRouter key. Keys start with sk-or-." }
+        var req = URLRequest(url: baseURL.appendingPathComponent("key"))
+        req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        req.timeoutInterval = 15
+        guard let (_, response) = try? await URLSession.shared.data(for: req),
+              let http = response as? HTTPURLResponse, http.statusCode == 401 else { return nil }
+        return "OpenRouter doesn't recognise that key. Copy it again from openrouter.ai/keys."
     }
 
     func request(path: String, body: [String: Any]) throws -> URLRequest {

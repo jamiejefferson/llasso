@@ -53,7 +53,7 @@ final class Settings: ObservableObject {
     }
 
     func saveKey(_ key: String) {
-        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = OpenRouterClient.cleanKey(key)
         cachedKey = nil
         if trimmed.isEmpty {
             Keychain.delete(service: "llasso-openrouter", account: "default")

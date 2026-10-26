@@ -58,16 +58,18 @@ extension SelfTest {
             job.close()
             backdrop.orderOut(nil)
 
-            // Settings, first run and with a key saved: the key field should read as a place to paste.
-            for noKey in [true, false] {
+            // Settings, first run, with a key saved, and after a paste OpenRouter refused: the key
+            // field should read as a place to paste, and a refusal should say why.
+            for (state, noKey, problem) in [("nokey", true, nil), ("saved", false, nil),
+                                            ("refused", true, "That isn't an OpenRouter key. Keys start with sk-or-.")] {
                 let w = NSWindow(contentRect: CGRect(x: v.midX - 260, y: v.maxY - 760, width: 520, height: 720),
                                  styleMask: [.titled, .closable], backing: .buffered, defer: false)
                 w.title = "Llasso Settings"
                 w.isReleasedWhenClosed = false
-                w.contentView = NSHostingView(rootView: SettingsView(showsNoKey: noKey))
+                w.contentView = NSHostingView(rootView: SettingsView(showsNoKey: noKey, showsProblem: problem))
                 w.orderFrontRegardless()
                 try? await Task.sleep(nanoseconds: 600_000_000)
-                await shoot(w.frame, "look-\(name)-8-settings-\(noKey ? "nokey" : "saved")")
+                await shoot(w.frame, "look-\(name)-8-settings-\(state)")
                 w.orderOut(nil)
             }
         }
