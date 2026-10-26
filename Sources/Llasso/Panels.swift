@@ -320,6 +320,10 @@ struct CardView: View {
         }
     }
 
+    private var running: Bool {
+        model.state == .thinking || model.state == .streaming || model.working != nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
@@ -327,10 +331,13 @@ struct CardView: View {
                 Text(model.title).font(.system(size: 15, weight: .semibold)).foregroundColor(.llText)
                     .lineLimit(1).truncationMode(.tail)
                 Spacer(minLength: 8)
-                Button { model.onClose?() } label: {
-                    Image(systemName: "xmark").font(.system(size: 12, weight: .semibold)).foregroundColor(.llFaint)
+                // Finished, Thanks! closes the card; the cross is only for one still working.
+                if running {
+                    Button { model.onClose?() } label: {
+                        Image(systemName: "xmark").font(.system(size: 12, weight: .semibold)).foregroundColor(.llFaint)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
             if model.state == .thinking {
                 Text("Looking at the box…").font(.system(size: 15)).foregroundColor(.llFaint)
@@ -409,7 +416,7 @@ struct CardView: View {
                     .onAppear { focused = true }
             }
             HStack(spacing: 8) {
-                if model.state == .thinking || model.state == .streaming || model.working != nil {
+                if running {
                     chip("Stop", primary: true) { model.onStop?() }
                 } else {
                     if !model.answer.isEmpty {
@@ -420,7 +427,9 @@ struct CardView: View {
                     }
                 }
                 Spacer()
-                Text("Esc closes").font(.system(size: 12)).foregroundColor(.llFaint)
+                if !running {
+                    chip("Thanks!", primary: false) { model.onClose?() }
+                }
             }
         }
         .padding(18)

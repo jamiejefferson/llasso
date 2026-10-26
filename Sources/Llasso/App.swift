@@ -342,7 +342,7 @@ struct SettingsView: View {
                 }
             }
             Section("Use") {
-                Text("Hold ⌘ and drag a box round anything. The prompt opens when you let go: type and press Return, or hold the mic and talk. Where ⌘-drag doesn't reach, press ⌃⌥S or choose Draw a box from the menu bar. Esc stops or closes.")
+                Text("Hold ⌘ and drag a box round anything. The prompt opens when you let go: type and press Return, or hold the mic and talk. Where ⌘-drag doesn't reach, press ⌃⌥S or choose Draw a box from the menu bar. Esc closes the prompt.")
                     .font(.callout)
             }
         }
