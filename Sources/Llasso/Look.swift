@@ -3,11 +3,11 @@ import QuartzCore
 import SwiftUI
 import LlassoKit
 
-// The look: a pulsing marching-ants marquee in white and black round the box, with a spark of
-// light that runs round it, and clean white or black frosted glass for the panels.
+// The look: a marching-ants marquee in white and black round the box, and clean white or
+// black frosted glass for the panels.
 
 extension Palette {
-    /// The marquee's dashes and the spark that runs round it.
+    /// The marquee's dashes.
     static let ant = NSColor.white
     static let glint = NSColor.white
     static let text = dynamic(light: NSColor(srgbRed: 0.078, green: 0.071, blue: 0.063, alpha: 1),
@@ -30,8 +30,7 @@ extension NSAppearance {
 // MARK: - The lasso round a box
 
 /// The marquee round a box: marching ants in the old Photoshop style, white dashes over a dark
-/// line so it reads on any page, pulsing gently, with a spark of light running round the loop. Layer-backed so the march, the pulse and the
-/// fray run on Core Animation. The view is larger than the box by `margin` on every side, which
+/// line so it reads on any page. Layer-backed so the march and the fray run on Core Animation. The view is larger than the box by `margin` on every side, which
 /// leaves room for the dashes drifting out as they fray.
 final class LassoView: NSView {
     enum State { case resting, focused }
@@ -44,17 +43,10 @@ final class LassoView: NSView {
     /// One march of a dash and a gap, in seconds; resting is slower.
     static let marchFocused: CFTimeInterval = 0.45
     static let marchResting: CFTimeInterval = 0.9
-    /// The pulse dips the marquee to this opacity and back every `pulse` seconds.
-    static let pulseLow: Float = 0.55
-    static let pulse: CFTimeInterval = 1.6
-    /// One lap of the spark, in seconds, and how much of the loop it lights at once.
-    static let sparkLap: CFTimeInterval = 2.4
-    static let sparkLength: CGFloat = 0.07
 
     private let group = CALayer()
     private let base = CAShapeLayer()
     private let ants = CAShapeLayer()
-    private let spark = CAShapeLayer()
     private var dust: CALayer?
     private(set) var state: State = .resting
     private(set) var fraying = false
@@ -69,7 +61,7 @@ final class LassoView: NSView {
         wantsLayer = true
         layer?.masksToBounds = false
         layer?.addSublayer(group)
-        for l in [base, ants, spark] {
+        for l in [base, ants] {
             l.fillColor = nil
             l.lineWidth = Self.lineWidth
             l.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
@@ -77,15 +69,6 @@ final class LassoView: NSView {
         }
         base.strokeColor = NSColor(white: 0, alpha: 0.6).cgColor
         ants.strokeColor = Palette.ant.cgColor
-        spark.strokeColor = Palette.glint.cgColor
-        spark.lineWidth = 1.6
-        spark.lineCap = .round
-        spark.shadowColor = Palette.glint.cgColor
-        spark.shadowOffset = .zero
-        spark.shadowRadius = 3
-        spark.shadowOpacity = 0.9
-        spark.strokeStart = 0
-        spark.strokeEnd = 0
         ants.lineDashPattern = [NSNumber(value: Double(Self.dash)), NSNumber(value: Double(Self.dash))]
         layout()
         apply(.resting, animated: false)
@@ -97,7 +80,7 @@ final class LassoView: NSView {
         super.layout()
         group.frame = bounds
         let path = Self.path(round: boxRect.insetBy(dx: 0.5, dy: 0.5))
-        for l in [base, ants, spark] { l.frame = bounds; l.path = path }
+        for l in [base, ants] { l.frame = bounds; l.path = path }
     }
 
     /// Close the loop from the release corner: the marquee draws round in a quarter second.
@@ -115,14 +98,6 @@ final class LassoView: NSView {
         if fraying { restore() }
         self.state = state
         march(state == .focused ? Self.marchFocused : Self.marchResting)
-        let p = CABasicAnimation(keyPath: "opacity")
-        p.fromValue = 1
-        p.toValue = state == .focused ? (1 + Self.pulseLow) / 2 : Self.pulseLow
-        p.duration = Self.pulse / 2
-        p.autoreverses = true
-        p.repeatCount = .infinity
-        p.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        group.add(p, forKey: "pulse")
     }
 
     private func march(_ duration: CFTimeInterval) {
@@ -132,24 +107,6 @@ final class LassoView: NSView {
         a.duration = duration
         a.repeatCount = .infinity
         ants.add(a, forKey: "march")
-        run()
-    }
-
-    /// The spark: a short bright stretch of thread that laps the box, trailing a soft glow.
-    private func run() {
-        guard spark.animation(forKey: "run") == nil else { return }
-        let head = CABasicAnimation(keyPath: "strokeEnd")
-        head.fromValue = Self.sparkLength
-        head.toValue = 1
-        let tail = CABasicAnimation(keyPath: "strokeStart")
-        tail.fromValue = 0
-        tail.toValue = 1 - Self.sparkLength
-        let lap = CAAnimationGroup()
-        lap.animations = [head, tail]
-        lap.duration = Self.sparkLap
-        lap.repeatCount = .infinity
-        lap.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        spark.add(lap, forKey: "run")
     }
 
     /// Left alone: the dashes break into specks that drift away outward, in random order.
@@ -158,7 +115,6 @@ final class LassoView: NSView {
         fraying = true
         dust = Dust.scatter(along: Self.path(round: boxRect), gap: Self.dash, dotSize: 1.4, colour: Palette.ant,
                             opacity: 1, drift: 12, duration: duration, into: host)
-        group.removeAnimation(forKey: "pulse")
         group.opacity = 0
     }
 

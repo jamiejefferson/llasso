@@ -48,8 +48,6 @@ final class SelectionView: NSView {
     /// Selection in this view's coordinates.
     private(set) var selection: CGRect?
     private var anchor: CGPoint?
-    /// Where the pointer is while dragging: the bead of light leads from here.
-    private var head: CGPoint?
     private var lasso: LassoView?
 
     var onPointerDown: (() -> Void)?
@@ -66,7 +64,6 @@ final class SelectionView: NSView {
     func clear() {
         selection = nil
         anchor = nil
-        head = nil
         updateLasso()
         needsDisplay = true
     }
@@ -104,14 +101,12 @@ final class SelectionView: NSView {
         // First, because it clears every overlay, this one included.
         onPointerDown?()
         anchor = point
-        head = point
         selection = nil
         needsDisplay = true
     }
 
     func dragMoved(to p: CGPoint) {
         guard mode == .selecting, let anchor else { return }
-        head = p
         selection = CGRect(x: min(anchor.x, p.x), y: min(anchor.y, p.y),
                            width: abs(p.x - anchor.x), height: abs(p.y - anchor.y))
         needsDisplay = true
@@ -120,7 +115,6 @@ final class SelectionView: NSView {
     func dragEnded() {
         guard mode == .selecting else { return }
         anchor = nil
-        head = nil
         guard let selection, selection.width >= 12, selection.height >= 12 else {
             // A click or a tiny drag: keep waiting for a real box.
             self.selection = nil
@@ -159,14 +153,6 @@ final class SelectionView: NSView {
         line.setLineDash([LassoView.dash, LassoView.dash], count: 2, phase: lap - phase)
         Palette.ant.setStroke()
         line.stroke()
-        if let head { drawBead(at: head) }
-    }
-
-    private func drawBead(at p: CGPoint) {
-        let glow = NSGradient(colors: [Palette.glint.withAlphaComponent(0.7), Palette.glint.withAlphaComponent(0)])
-        glow?.draw(in: NSBezierPath(ovalIn: CGRect(x: p.x - 7, y: p.y - 7, width: 14, height: 14)), relativeCenterPosition: .zero)
-        Palette.glint.setFill()
-        NSBezierPath(ovalIn: CGRect(x: p.x - 1.5, y: p.y - 1.5, width: 3, height: 3)).fill()
     }
 
     private func drawHint() {
