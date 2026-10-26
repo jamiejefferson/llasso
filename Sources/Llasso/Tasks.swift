@@ -71,6 +71,7 @@ struct TasksView: View {
     var onShow: (Job) -> Void
     var onDraw: () -> Void
     var onClear: () -> Void
+    var onFeedback: () -> Void
     var onSettings: () -> Void
     var onQuit: () -> Void
 
@@ -113,6 +114,7 @@ struct TasksView: View {
                     Button("Clear finished", action: onClear)
                 }
                 Spacer()
+                Button("Feedback…", action: onFeedback)
                 Button("Settings…", action: onSettings)
                 Button("Quit", action: onQuit)
             }

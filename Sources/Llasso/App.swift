@@ -53,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(withTitle: "Draw a box   ⌃⌥S", action: #selector(draw), keyEquivalent: "").target = self
         menu.addItem(.separator())
+        menu.addItem(withTitle: "Send feedback…", action: #selector(feedback), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Settings…", action: #selector(settings), keyEquivalent: ",").target = self
         menu.addItem(withTitle: "Show history", action: #selector(history), keyEquivalent: "").target = self
         menu.addItem(.separator())
@@ -116,6 +117,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if CommandLine.arguments.contains("--flowtest") {
             Task { @MainActor in await SelfTest.flow(); NSApp.terminate(nil) }
+        }
+        if CommandLine.arguments.contains("--feedbacktest") {
+            Task { @MainActor in await SelfTest.feedback(); NSApp.terminate(nil) }
         }
         if CommandLine.arguments.contains("--drawtest") {
             Task { @MainActor in await SelfTest.draw(); NSApp.terminate(nil) }
@@ -200,6 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onShow: { [weak p] job in p?.performClose(nil); job.show() },
             onDraw: { [weak self] in self?.drawFromList() },
             onClear: { Controller.shared.clearFinished(); model.sync() },
+            onFeedback: { [weak p] in p?.performClose(nil); FeedbackWindow.show() },
             onSettings: { [weak p] in p?.performClose(nil); SettingsWindow.show() },
             onQuit: { NSApp.terminate(nil) }))
         popover = p
@@ -216,6 +221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func draw() { DispatchQueue.main.async { Controller.shared.begin() } }
     @objc private func settings() { SettingsWindow.show() }
+    @objc private func feedback() { FeedbackWindow.show() }
     @objc private func history() {
         try? FileManager.default.createDirectory(at: History.folder, withIntermediateDirectories: true)
         NSWorkspace.shared.open(History.folder)
