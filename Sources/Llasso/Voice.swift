@@ -262,8 +262,9 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegat
         case .openrouter:
             // Fetch now so audio is ready by the time earlier sentences finish.
             let client = settings.client
-            let model = settings.ttsModel
-            let voiceName = settings.ttsVoice
+            let speech = ModelStore.shared.speech().model
+            let model = speech.id
+            let voiceName = Settings.voice(for: speech)
             let fetch = Task { try await client.speech(model: model, voice: voiceName, text: sentence) }
             let previous = chain
             let gen = generation

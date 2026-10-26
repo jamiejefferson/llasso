@@ -110,6 +110,9 @@ public enum Brief {
     - Images: whenever the user wants a picture made or changed (an image, illustration, \
     drawing, icon, mock-up or variation, from anything in the box), call edit_image with an \
     instruction for the image model. You can make images this way, so never reply that you can't.
+    - Video and sound: when the user wants a clip, animation or moving version of what is in \
+    the box, call make_video. When they want music, a jingle, a sound effect or words read \
+    aloud as a file, call make_sound. You can make both, so never reply that you can't.
     - Spreadsheets: work out the answer from the cell values given, then call set_cells to \
     write results or formulas, and say in your reply what you calculated.
     - Help with an app: answer in plain steps, and call point_at to ring the control to use next.

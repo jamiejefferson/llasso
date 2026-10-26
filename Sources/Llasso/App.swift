@@ -48,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installEditMenu()
+        ModelStore.shared.refresh()
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage.llassoMark()
         let menu = NSMenu()
@@ -230,12 +231,86 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 // MARK: - Settings window
 
+/// One row per kind of work: Auto or the person's model, and Change to open the picker.
+struct ModelsSection: View {
+    @ObservedObject private var store = ModelStore.shared
+
+    var body: some View {
+        Section {
+            Picker("Lean towards", selection: $store.lean) {
+                ForEach(Lean.allCases) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            ForEach(Work.allCases) { work in row(work) }
+            Toggle(isOn: $store.useJev) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Read requests with Jev")
+                    Text("A fast decision model on OpenRouter reads what you typed (not the screenshot) to tell the kind of work. Off, or when it takes over 1.5 s, Llasso reads the words itself.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            HStack {
+                Text(listStatus).font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button(store.loading ? "Refreshing…" : "Refresh") { store.refresh(force: true) }.disabled(store.loading)
+            }
+        } header: {
+            Text("Models")
+        } footer: {
+            Text("Auto picks the best model for each request from OpenRouter's live list, weighing benchmarks, price and speed. A model you choose for a kind of work is always used for it. The card names the model and says why.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .onAppear { store.refresh() }
+    }
+
+    private func row(_ work: Work) -> some View {
+        let pinned = store.pin(for: work)
+        let m = pinned.map { store.model($0, kind: work.kind) ?? ModelInfo(id: $0, kind: work.kind) }
+        return HStack(spacing: 12) {
+            Image(systemName: icon(work)).frame(width: 22).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(work.label)
+                Group {
+                    if let m {
+                        Text(m.name + (Prices.line(m).headline.map { " · " + $0 + " " + Prices.unit(work.kind).lowercased() } ?? ""))
+                    } else {
+                        Text("Auto · now \(store.choose(work).model.name)")
+                    }
+                }
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            Button("Change") { ModelBrowserWindow.show(work) }
+        }
+        .help(work.blurb)
+    }
+
+    private var listStatus: String {
+        if let error = store.loadError, store.lists.isEmpty { return "Couldn't load OpenRouter's models: \(error)" }
+        guard let updated = store.updated else { return store.loading ? "Loading OpenRouter's models…" : "OpenRouter's models haven't loaded yet." }
+        let ago = RelativeDateTimeFormatter().localizedString(for: updated, relativeTo: Date())
+        return "\(store.models(.chat).count) chat, \(store.models(.image).count) image, \(store.models(.video).count) video and \(store.models(.sound).count) sound models, updated \(ago)."
+    }
+
+    private func icon(_ work: Work) -> String {
+        switch work {
+        case .writing: return "text.alignleft"
+        case .coding: return "chevron.left.forwardslash.chevron.right"
+        case .design: return "square.on.circle"
+        case .image: return "photo"
+        case .motion: return "film"
+        case .sound: return "waveform"
+        case .admin: return "tray.full"
+        }
+    }
+}
+
 enum SettingsWindow {
     private static var window: NSWindow?
 
     static func show() {
         if window == nil {
-            let w = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 520, height: 720),
+            let w = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 540, height: 780),
                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
             w.title = "Llasso Settings"
             w.isReleasedWhenClosed = false
@@ -308,13 +383,8 @@ struct SettingsView: View {
                     }
                 }
                 .padding(.vertical, 4)
-                TextField("Model", text: $settings.model)
-                Text("Any OpenRouter model that reads images and calls tools. Default: \(Settings.defaultModel).")
-                    .font(.caption).foregroundStyle(.secondary)
-                TextField("Image model", text: $settings.imageModel)
-                Text("Edits boxed images. Default: \(Settings.defaultImageModel).")
-                    .font(.caption).foregroundStyle(.secondary)
             }
+            ModelsSection()
             Section("Connected apps") {
                 ForEach(integrations.all) { i in
                     HStack(alignment: .top) {
@@ -354,8 +424,9 @@ struct SettingsView: View {
                     ForEach(Settings.VoiceOut.allCases) { Text($0.label).tag($0) }
                 }
                 if settings.voiceOut == .openrouter {
-                    TextField("Speech model", text: $settings.ttsModel)
                     TextField("Voice name or id", text: $settings.ttsVoice)
+                    Text("Uses your Sound model when it speaks, else the best speech model (now \(ModelStore.shared.speech().model.name)).")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Text("Answers are spoken only when you asked out loud.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -379,7 +450,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520, height: 720)
+        .frame(width: 540, height: 780)
         .onReceive(timer) { _ in
             form.refresh()
         }

@@ -83,6 +83,8 @@ enum Actuator {
             return d
         case .script:
             return [.run]
+        case .video, .sound:
+            return [.saveAs, .copy]
         }
     }
 
@@ -359,6 +361,27 @@ enum Actuator {
         }
     }
 
+    /// Save or copy a clip or a sound. Copy puts the file on the clipboard, which pastes
+    /// into Finder, Mail, Slack and most editors.
+    static func media(_ data: Data, ext: String, to d: Destination, context c: ScreenContext) throws -> String {
+        let noun = ext == "mp4" ? "clip" : "sound"
+        switch d {
+        case .saveAs:
+            let url = try saveAs(data, ext: ext, context: c)
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            return "Saved \(url.lastPathComponent) in \(url.deletingLastPathComponent().lastPathComponent)."
+        case .copy:
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("Llasso \(stamp()).\(ext)")
+            try data.write(to: url)
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.writeObjects([url as NSURL])
+            return "Copied the \(noun) to the clipboard."
+        default:
+            throw ActionError.failed("That destination doesn't take a \(noun).")
+        }
+    }
+
     /// Scale to `size` pixels, tagged as `points` so a Retina capture pastes at the size it was boxed.
     static func resized(_ png: Data, to size: CGSize?, points: CGSize? = nil) -> Data {
         guard let size, size.width > 0, size.height > 0,
@@ -475,7 +498,7 @@ enum Actuator {
         let panel = NSSavePanel()
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
-        panel.allowedContentTypes = [ext == "png" ? .png : .plainText]
+        panel.allowedContentTypes = [ext == "png" ? .png : UTType(filenameExtension: ext) ?? .plainText]
         panel.nameFieldStringValue = "Llasso \(stamp()).\(ext)"
         panel.directoryURL = startFolder(context: c, ext: ext)
         panel.message = c.source.map { "Saving into \($0.name)" } ?? ""

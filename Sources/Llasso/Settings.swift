@@ -20,22 +20,20 @@ final class Settings: ObservableObject {
 
     private let defaults = UserDefaults.standard
 
-    @Published var model: String { didSet { defaults.set(model, forKey: "model") } }
     @Published var voiceOut: VoiceOut { didSet { defaults.set(voiceOut.rawValue, forKey: "voiceOut") } }
-    @Published var ttsModel: String { didSet { defaults.set(ttsModel, forKey: "ttsModel") } }
     @Published var ttsVoice: String { didSet { defaults.set(ttsVoice, forKey: "ttsVoice") } }
-    @Published var imageModel: String { didSet { defaults.set(imageModel, forKey: "imageModel") } }
     @Published private(set) var hasKey = false
+
+    /// The chat model for work that isn't a person's request (self-tests, rewriting copied
+    /// formatting): whatever the router would use for a moderate piece of writing.
+    var model: String { ModelStore.shared.choose(.writing).model.id }
 
     static let defaultModel = "anthropic/claude-sonnet-5.5"
     static let defaultImageModel = "google/gemini-3.1-flash-image"
 
     private init() {
-        model = defaults.string(forKey: "model") ?? Settings.defaultModel
         voiceOut = VoiceOut(rawValue: defaults.string(forKey: "voiceOut") ?? "") ?? .system
-        ttsModel = defaults.string(forKey: "ttsModel") ?? "elevenlabs/eleven-v4-turbo"
         ttsVoice = defaults.string(forKey: "ttsVoice") ?? ""
-        imageModel = defaults.string(forKey: "imageModel") ?? Settings.defaultImageModel
         hasKey = !apiKey.isEmpty
     }
 
@@ -64,6 +62,15 @@ final class Settings: ObservableObject {
     }
 
     var client: OpenRouterClient { OpenRouterClient(apiKey: apiKey) }
+
+    /// The voice to ask a speech model for: the one named in Settings when the model has it,
+    /// else the model's first.
+    static func voice(for model: ModelInfo) -> String {
+        let wanted = shared.ttsVoice.trimmingCharacters(in: .whitespaces)
+        if model.voices.isEmpty { return wanted }
+        if let hit = model.voices.first(where: { $0.caseInsensitiveCompare(wanted) == .orderedSame }) { return hit }
+        return model.voices.first ?? wanted
+    }
 }
 
 /// The key lives in the login keychain. Llasso is signed with a local certificate and has no

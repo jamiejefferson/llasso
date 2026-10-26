@@ -51,16 +51,30 @@ extension SelfTest {
             await shoot(side, "look-\(name)-6-working")
             // The answer arrives: the card comes up at the side by itself.
             job.card.working = nil
+            job.card.route = RouteLine(work: "Image", model: "Claude Haiku 5.5", auto: true,
+                                       reason: "Claude Haiku 5.5 handles design work as well as Claude Sonnet 5.5, and cheaper.")
             job.card.answer = "The sky in this photo runs from pale blue to peach. I can warm it towards amber and crop it square."
             job.card.state = .done
             try? await Task.sleep(nanoseconds: 700_000_000)
             await shoot(side, "look-\(name)-7-card")
+            // A clip on the card, with the line that says which model made it.
+            let clip = FileManager.default.temporaryDirectory.appendingPathComponent("llasso-check.mp4")
+            if FileManager.default.fileExists(atPath: clip.path) {
+                var p = ProposalCard(summary: "A paper boat drifting on the pond", destinations: [.saveAs, .copy])
+                p.mediaURL = clip
+                p.madeBy = "Made with Grok Imagine Video 1.5 Lite. Grok Imagine Video 1.5 Lite handles video as well as Seedance 2.0 Mini, and cheaper."
+                job.card.answer = ""
+                job.card.proposal = p
+                job.show()
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                await shoot(CGRect(x: v.maxX - 640, y: v.maxY - 620, width: 640, height: 620), "look-\(name)-7b-clip")
+            }
             job.close()
             backdrop.orderOut(nil)
 
             // Settings, first run and with a key saved: the key field should read as a place to paste.
             for noKey in [true, false] {
-                let w = NSWindow(contentRect: CGRect(x: v.midX - 260, y: v.maxY - 760, width: 520, height: 720),
+                let w = NSWindow(contentRect: CGRect(x: v.midX - 270, y: v.maxY - 820, width: 540, height: 780),
                                  styleMask: [.titled, .closable], backing: .buffered, defer: false)
                 w.title = "Llasso Settings"
                 w.isReleasedWhenClosed = false
@@ -68,10 +82,39 @@ extension SelfTest {
                 w.orderFrontRegardless()
                 try? await Task.sleep(nanoseconds: 600_000_000)
                 await shoot(w.frame, "look-\(name)-8-settings-\(noKey ? "nokey" : "saved")")
+                if !noKey {
+                    // Scrolled to the Models section.
+                    if let scroll = Self.firstScrollView(in: w.contentView) {
+                        scroll.contentView.scroll(to: CGPoint(x: 0, y: 330))
+                        scroll.reflectScrolledClipView(scroll.contentView)
+                        try? await Task.sleep(nanoseconds: 400_000_000)
+                        await shoot(w.frame, "look-\(name)-8b-settings-models")
+                    }
+                }
                 w.orderOut(nil)
+            }
+
+            // The model picker, for a chat model and an image model.
+            for _ in 0..<60 where ModelStore.shared.loading || ModelStore.shared.lists.isEmpty {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+            for work in [Work.writing, .image] {
+                ModelBrowserWindow.show(work)
+                try? await Task.sleep(nanoseconds: 900_000_000)
+                if let w = NSApp.windows.first(where: { $0.title == "Choose a model" && $0.isVisible }) {
+                    await shoot(w.frame, "look-\(name)-9-picker-\(work.rawValue)")
+                    w.close()
+                }
             }
         }
         NSApp.appearance = nil
+    }
+
+    static func firstScrollView(in view: NSView?) -> NSScrollView? {
+        guard let view else { return nil }
+        if let s = view as? NSScrollView { return s }
+        for sub in view.subviews { if let s = firstScrollView(in: sub) { return s } }
+        return nil
     }
 
     private static func shoot(_ rect: CGRect, _ name: String) async {

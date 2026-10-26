@@ -222,5 +222,100 @@ check("faithful rewrite accepted", RichText.isFaithful("<p><span>Rends ce </span
 check("rewrite that drops a tag rejected", !RichText.isFaithful("<p><span>Rends ce gras mot</span></p>", original: mixed, text: "Rends ce gras mot"))
 check("style blocks aren't text", RichText.plain("<style>p{color:red}</style><p>Hi</p>") == "Hi")
 
+// Router: reading a request.
+check("video word reads as motion", Reader.read("turn this into a short video", kind: .image).work == .motion)
+check("music reads as sound", Reader.read("make a jingle for this", kind: .webPage).work == .sound)
+check("sky on a picture reads as image", Reader.read("make the sky orange", kind: .image).work == .image)
+check("shorter reads as writing", Reader.read("make this shorter", kind: .editableText).work == .writing)
+check("plain words on a local page read as code", Reader.read("make this button bigger", kind: .webPage, hasSource: true).work == .coding)
+check("spacing on a local page is still code", Reader.read("tighten the spacing", kind: .webPage, hasSource: true).work == .coding)
+check("spacing in Paper is design", Reader.read("tighten the spacing", kind: .design).work == .design)
+check("a total in a sheet is admin", Reader.read("add a total row", kind: .spreadsheet).work == .admin)
+check("no words falls to the box", Reader.read("", kind: .spreadsheet) == Reading(work: .admin, difficulty: .simple, confidence: 0.7, source: .box))
+check("long requests are hard", Reader.difficulty(of: String(repeating: "word ", count: 130)) == .hard)
+let jevReply = #"{"answers":{"work":{"choice":"design","confidence":0.9,"probabilities":{"design":0.88}},"difficulty":{"choice":"hard","confidence":0.8}}}"#
+let jevReading = Jev.reading(from: Data(jevReply.utf8))
+check("jev reply reads", jevReading?.work == .design && jevReading?.difficulty == .hard
+      && abs((jevReading?.confidence ?? 0) - 0.88 * 0.95) < 0.001)
+check("jev reply with unknown work is ignored", Jev.reading(from: Data(#"{"answers":{"work":{"choice":"poetry"}}}"#.utf8)) == nil)
+
+// Router: catalogue and prices.
+let chatList = #"{"data":[{"id":"anthropic/claude-sonnet-5.5","name":"Anthropic: Claude Sonnet 5.5","created":1790000000,"context_length":1000000,"architecture":{"input_modalities":["text","image"],"output_modalities":["text"]},"pricing":{"prompt":"0.000003","completion":"0.000015"},"supported_parameters":["tools","reasoning"]},{"id":"google/gemini-3.5-flash-lite","name":"Google: Gemini 3.5 Flash Lite","architecture":{"input_modalities":["text","image"],"output_modalities":["text"]},"pricing":{"prompt":"0.0000001","completion":"0.0000004"},"supported_parameters":["tools"]},{"id":"some/text-only","architecture":{"input_modalities":["text"],"output_modalities":["text"]},"pricing":{"prompt":"0","completion":"0"},"supported_parameters":["tools"]},{"id":"openrouter/auto","architecture":{"input_modalities":["text","image"],"output_modalities":["text"]},"pricing":{"prompt":"-1","completion":"-1"},"supported_parameters":["tools"]}]}"#
+let chats = Catalogue.parse(Data(chatList.utf8), kind: .chat)
+check("chat list keeps models that see and use tools", chats.map(\.id) == ["anthropic/claude-sonnet-5.5", "google/gemini-3.5-flash-lite"])
+check("names lose the maker prefix", chats.first?.name == "Claude Sonnet 5.5" && chats.first?.maker == "Anthropic")
+check("chat headline is writing per 1M", Prices.line(chats[0]).headline == "$15.00" && Prices.line(chats[0]).sub == "$3.00 reading")
+check("small prices keep two figures", Prices.money(0.0125) == "$0.0125" && Prices.money(0.04) == "$0.04")
+let videoList = #"{"data":[{"id":"google/veo-3.1-fast","name":"Google: Veo 3.1 Fast","supported_frame_images":["first_frame"],"supported_durations":[4,6,8],"pricing_skus":{"duration_seconds_with_audio":"0.12","duration_seconds_with_audio_720p":"0.10","duration_seconds_without_audio_720p":"0.08"}},{"id":"runway/gen-4.5","pricing_skus":{"cents_per_second_output":"12"}},{"id":"black-forest-labs/flux-video-upscale","pricing_skus":{"cents_per_megapixel_second_precise":"3.5"}}]}"#
+let videos = Catalogue.parse(Data(videoList.utf8), kind: .video)
+check("video price reads at 720p", videos.first?.price.perSecond == 0.10 && Prices.line(videos[0]).headline == "$0.50")
+check("cents become dollars", videos[1].price.perSecond == 0.12)
+check("upscalers are utilities", videos[2].utility && videos[2].price.perSecond == nil)
+let quick = Router.choose(work: .admin, difficulty: .simple, models: chats, lean: .thrift, pinned: nil, fallback: "x")
+let hard = Router.choose(work: .coding, difficulty: .hard, models: chats, lean: .quality, pinned: nil, fallback: "x")
+check("cheap and simple picks the small model", quick.model.id == "google/gemini-3.5-flash-lite" && quick.auto)
+check("hard code picks the strong model", hard.model.id == "anthropic/claude-sonnet-5.5")
+check("the reason names both models", hard.reason.contains("Claude Sonnet 5.5") && hard.reason.contains("Gemini 3.5 Flash Lite"))
+let pinned = Router.choose(work: .coding, difficulty: .hard, models: chats, lean: .quality, pinned: "google/gemini-3.5-flash-lite", fallback: "x")
+check("a pinned model wins", pinned.model.id == "google/gemini-3.5-flash-lite" && !pinned.auto && pinned.reason.hasPrefix("You chose"))
+let refused = Router.choose(work: .motion, difficulty: .simple, models: videos, lean: .balanced, pinned: "runway/gen-4.5", fallback: "x",
+                            fits: { !$0.frames.isEmpty })
+check("a pinned model that can't do the job gives way, and says so", refused.auto && refused.reason.hasPrefix("Your choice, gen-4.5"))
+check("empty list falls back", Router.choose(work: .image, difficulty: .simple, models: [], lean: .balanced, pinned: nil, fallback: "a/b").model.id == "a/b")
+
+// With LLASSO_CATALOGUES pointing at saved OpenRouter lists (chat.json, image.json, video.json,
+// speech.json, audio.json), print what Auto picks for every work, level and lean.
+if let dir = ProcessInfo.processInfo.environment["LLASSO_CATALOGUES"] {
+    func load(_ names: [String], _ kind: ModelKind) -> [ModelInfo] {
+        names.flatMap { name -> [ModelInfo] in
+            guard let data = FileManager.default.contents(atPath: dir + "/" + name) else { return [] }
+            return Catalogue.parse(data, kind: kind)
+        }
+    }
+    let lists: [ModelKind: [ModelInfo]] = [.chat: load(["chat.json"], .chat), .image: load(["image.json"], .image),
+                                           .video: load(["video.json"], .video), .sound: load(["speech.json", "audio.json"], .sound)]
+    for kind in ModelKind.allCases { print("\(kind.rawValue): \(lists[kind]?.count ?? 0) models") }
+    for work in Work.allCases {
+        for lean in Lean.allCases {
+            let line = Difficulty.allCases.map { d in
+                Router.choose(work: work, difficulty: d, models: lists[work.kind] ?? [], lean: lean, pinned: nil, fallback: "-").model.id
+            }
+            print("\(work.rawValue) \(lean.rawValue): \(line.joined(separator: " | "))")
+        }
+        let c = Router.choose(work: work, difficulty: .moderate, models: lists[work.kind] ?? [], lean: .balanced, pinned: nil, fallback: "-")
+        print("  why: \(c.reason)")
+    }
+}
+
+// With LLASSO_LIVE_MEDIA=1 and a key, make one Jev reading, a two-second clip and a music clip.
+// These cost money, so they never run by default.
+if ProcessInfo.processInfo.environment["LLASSO_LIVE_MEDIA"] == "1",
+   let key = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"], !key.isEmpty {
+    let client = OpenRouterClient(apiKey: key)
+    let out = FileManager.default.temporaryDirectory
+    let sem3 = DispatchSemaphore(value: 0)
+    Task {
+        let started = Date()
+        let r = await client.jev(prompt: "tighten the spacing between these cards", box: "design canvas in Paper")
+        print("jev: \(String(describing: r)) in \(String(format: "%.2f", Date().timeIntervalSince(started)))s")
+        check("live jev reads design", r?.work == .design)
+        do {
+            let clip = try await client.video(model: "x-ai/grok-imagine-video-1.5-lite", prompt: "a paper boat drifting on a calm pond",
+                                              firstFrame: nil, seconds: 2, aspect: "16:9", resolution: "480p") { print("video: \($0)") }
+            try clip.write(to: out.appendingPathComponent("llasso-check.mp4"))
+            print("video: \(clip.count) bytes at \(out.path)/llasso-check.mp4")
+            check("live video is an mp4", clip.count > 10_000 && clip.subdata(in: 4..<8) == Data("ftyp".utf8))
+        } catch { print("video error: \(error.localizedDescription)"); check("live video", false) }
+        do {
+            let audio = try await client.music(model: "google/lyria-3-clip-preview", prompt: "a short cheerful ukulele jingle")
+            try audio.write(to: out.appendingPathComponent("llasso-check.mp3"))
+            print("music: \(audio.count) bytes, starts \(audio.prefix(4).map { String(format: "%02x", $0) }.joined())")
+            check("live music sends audio", audio.count > 10_000)
+        } catch { print("music error: \(error.localizedDescription)"); check("live music", false) }
+        sem3.signal()
+    }
+    sem3.wait()
+}
+
 print(failures == 0 ? "All checks passed." : "\(failures) check(s) failed.")
 exit(Int32(failures))

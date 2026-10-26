@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import AVKit
 import LlassoKit
 
 /// Reports a view's height so its panel can grow while keeping its top edge still.
@@ -271,6 +272,8 @@ final class CardModel: ObservableObject {
     @Published var log: [String] = []
     /// A slow piece of work in progress ("Editing the image…").
     @Published var working: String?
+    /// The model this request runs on and why, under the title.
+    @Published var route: RouteLine?
 
     var onCopy: (() -> Void)?
     var onStop: (() -> Void)?
@@ -289,12 +292,25 @@ final class CardModel: ObservableObject {
     }
 }
 
+/// Which model a request runs on, as the card shows it.
+struct RouteLine: Equatable {
+    var work: String
+    var model: String
+    var auto: Bool
+    var reason: String
+}
+
 /// The preview a proposal carries on the card.
 struct ProposalCard {
     var summary: String
     var text: String?
     var original: String?
     var image: Data?
+    /// A clip or sound to play, from a temporary file.
+    var mediaURL: URL?
+    var isAudio = false
+    /// Which model made the picture, clip or sound, and why.
+    var madeBy: String?
     var rows: [[String]]?
     var script: String?
     /// A code edit already made: the files it touched and the unified diff.
@@ -338,6 +354,23 @@ struct CardView: View {
                     }
                     .buttonStyle(.plain)
                 }
+            }
+            if let r = model.route {
+                // Which model this runs on and why, so the router's choice is never hidden.
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(r.work.uppercased()).font(.system(size: 10, weight: .semibold)).tracking(0.6)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Capsule().fill(Color.llWell))
+                        Text(r.model).font(.system(size: 12, weight: .medium)).foregroundColor(.llSub)
+                        Text(r.auto ? "· picked by Llasso" : "· your choice").font(.system(size: 12)).foregroundColor(.llFaint)
+                    }
+                    if r.auto {
+                        Text(r.reason).font(.system(size: 12)).foregroundColor(.llFaint)
+                            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .foregroundColor(.llSub)
             }
             if model.state == .thinking {
                 Text("Looking at the box…").font(.system(size: 15)).foregroundColor(.llFaint)
@@ -467,6 +500,16 @@ struct CardView: View {
                         .font(.system(size: 11)).foregroundColor(.llFaint)
                 }
             }
+            if let url = p.mediaURL {
+                MediaPreview(url: url, audio: p.isAudio)
+                    .frame(maxWidth: .infinity).frame(height: p.isAudio ? 44 : 280)
+                if p.done == nil {
+                    Text("Not saved yet.").font(.system(size: 11)).foregroundColor(.llFaint)
+                }
+            }
+            if let made = p.madeBy {
+                Text(made).font(.system(size: 11)).foregroundColor(.llFaint).fixedSize(horizontal: false, vertical: true)
+            }
             if let rows = p.rows {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(rows.prefix(12).enumerated()), id: \.offset) { _, row in
@@ -559,6 +602,30 @@ struct CardView: View {
         }
         .buttonStyle(.plain)
     }
+}
+
+/// Plays a clip or a sound on the card from its temporary file. AppKit's player view: the
+/// SwiftUI VideoPlayer can't load in a SwiftPM build and stops the app.
+struct MediaPreview: NSViewRepresentable {
+    let url: URL
+    let audio: Bool
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let v = AVPlayerView()
+        v.controlsStyle = audio ? .inline : .floating
+        v.showsFullScreenToggleButton = !audio
+        v.player = AVPlayer(url: url)
+        v.wantsLayer = true
+        v.layer?.cornerRadius = 8
+        v.layer?.masksToBounds = true
+        return v
+    }
+
+    func updateNSView(_ v: AVPlayerView, context: Context) {
+        if (v.player?.currentItem?.asset as? AVURLAsset)?.url != url { v.player = AVPlayer(url: url) }
+    }
+
+    static func dismantleNSView(_ v: AVPlayerView, coordinator: ()) { v.player?.pause() }
 }
 
 /// Lays chips out left to right and wraps them onto new lines.

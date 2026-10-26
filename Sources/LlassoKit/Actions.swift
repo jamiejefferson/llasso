@@ -55,10 +55,15 @@ public enum Proposal: Sendable, Equatable {
     case image(instruction: String, summary: String)
     case cells(start: String?, rows: [[String]], summary: String)
     case script(source: String, summary: String)
+    /// A short clip from a video model, optionally starting from the boxed picture.
+    case video(prompt: String, fromBox: Bool, seconds: Int?, aspect: String?, summary: String)
+    /// Music, a sound effect or speech. For speech the prompt is the exact words.
+    case sound(prompt: String, type: SoundType, summary: String)
 
     public var summary: String {
         switch self {
-        case .text(_, let s), .image(_, let s), .cells(_, _, let s), .script(_, let s): return s
+        case .text(_, let s), .image(_, let s), .cells(_, _, let s), .script(_, let s),
+             .video(_, _, _, _, let s), .sound(_, _, let s): return s
         }
     }
 }
@@ -72,12 +77,14 @@ public enum BuiltinTool: String, CaseIterable, Sendable {
     case setCells = "set_cells"
     case runScript = "run_applescript"
     case editCode = "edit_code"
+    case makeVideo = "make_video"
+    case makeSound = "make_sound"
 
     public static func named(_ name: String) -> BuiltinTool? { BuiltinTool(rawValue: name) }
 
     /// The tools on offer for this box. Every one leaves the change to the user's tap.
     public static func available(for kind: ContentKind, hasSource: Bool = false) -> [BuiltinTool] {
-        var tools: [BuiltinTool] = [.askUser, .pointAt, .proposeText, .editImage, .runScript]
+        var tools: [BuiltinTool] = [.askUser, .pointAt, .proposeText, .editImage, .makeVideo, .makeSound, .runScript]
         if kind == .spreadsheet { tools.append(.setCells) }
         if hasSource { tools.append(.editCode) }
         return tools
@@ -108,6 +115,20 @@ public enum BuiltinTool: String, CaseIterable, Sendable {
         case .editImage:
             return fn("Make an image with an image model, starting from what is in the box: edit the boxed image, or create a new image, illustration, drawing or variation of what the box shows. Write the full instruction for the image model, including style. Llasso shows the image on the card and lets the user save it, copy it or replace the source image.",
                       ["instruction": ["type": "string"], "summary": summary], ["instruction", "summary"])
+        case .makeVideo:
+            return fn("Make a short video clip with a video model: an animation, a moving version of the boxed picture, or a clip from a description. Write the full shot description: subject, motion, camera and style. Llasso plays it on the card and lets the user save it. It takes from half a minute to a few minutes.",
+                      ["prompt": ["type": "string"],
+                       "from_box": ["type": "boolean", "description": "Start the clip from the boxed picture as its first frame."],
+                       "seconds": ["type": "integer", "description": "Length in seconds; 5 when unsure."],
+                       "aspect_ratio": ["type": "string", "description": "16:9, 9:16 or 1:1. Omit to match the box."],
+                       "summary": summary],
+                      ["prompt", "summary"])
+        case .makeSound:
+            return fn("Make audio: music, a jingle or a sound effect from a description, or speech that reads out exact words. Llasso plays it on the card and lets the user save it.",
+                      ["type": ["type": "string", "enum": ["music", "speech"], "description": "music covers songs, jingles and sound effects"],
+                       "prompt": ["type": "string", "description": "For music, the full description. For speech, exactly the words to say."],
+                       "summary": summary],
+                      ["type", "prompt", "summary"])
         case .setCells:
             return fn("Write values or formulas into the spreadsheet. Rows are lists of cell strings; a string starting with = is a formula. The user confirms before anything is written.",
                       ["start": ["type": "string", "description": "Top-left cell, e.g. D2. Omit to use the top-left of the selection."],
@@ -140,6 +161,14 @@ public enum BuiltinTool: String, CaseIterable, Sendable {
         case .runScript:
             guard let s = a["script"] as? String else { return nil }
             return .script(source: s, summary: summary)
+        case .makeVideo:
+            guard let p = a["prompt"] as? String else { return nil }
+            let seconds = (a["seconds"] as? Int) ?? (a["seconds"] as? Double).map { Int($0) }
+            return .video(prompt: p, fromBox: a["from_box"] as? Bool ?? false, seconds: seconds,
+                          aspect: a["aspect_ratio"] as? String, summary: summary)
+        case .makeSound:
+            guard let p = a["prompt"] as? String else { return nil }
+            return .sound(prompt: p, type: (a["type"] as? String) == "speech" ? .speech : .music, summary: summary)
         case .askUser, .pointAt, .editCode:
             return nil
         }
