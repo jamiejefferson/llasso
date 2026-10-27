@@ -3,6 +3,12 @@ import SwiftUI
 import AVKit
 import LlassoKit
 
+/// The height of the card's scrolling middle, before it is cut to fit the screen.
+struct BodyHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 /// Reports a view's height so its panel can grow while keeping its top edge still.
 struct HeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
@@ -274,6 +280,8 @@ final class CardModel: ObservableObject {
     @Published var working: String?
     /// The model this request runs on and why, under the title.
     @Published var route: RouteLine?
+    /// The card's middle at full height, measured by the view; past the screen's height it scrolls.
+    @Published var bodyHeight: CGFloat = 0
     /// Several things made for one request: the steps, waiting for approval, then their progress.
     @Published var plan: PlanCard?
     /// What a plan made, each with its own chips.
@@ -361,6 +369,9 @@ struct CardView: View {
     @FocusState private var focused: Bool
     var onHeight: (CGFloat) -> Void
 
+    /// The tallest the scrolling middle may be: the screen, less the card's title, buttons and margins.
+    private var bodyLimit: CGFloat { max(200, (NSScreen.main?.visibleFrame.height ?? 800) - 300) }
+
     private var dot: Color {
         switch model.state {
         case .thinking, .streaming: return .llThread
@@ -405,73 +416,83 @@ struct CardView: View {
                 }
                 .foregroundColor(.llSub)
             }
-            if model.state == .thinking {
-                Text("Looking at the box…").font(.system(size: 15)).foregroundColor(.llFaint)
-            }
-            if !model.answer.isEmpty {
-                ScrollView {
-                    Text(rendered)
-                        .font(.system(size: 15))
-                        .lineSpacing(4)
-                        .foregroundColor(.llText)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxHeight: 360)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-            if !model.log.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(Array(model.log.suffix(6).enumerated()), id: \.offset) { _, line in
-                        Text(line).font(.system(size: 12, design: .monospaced)).foregroundColor(.llFaint)
-                            .lineLimit(1).truncationMode(.tail)
+            // Everything between the title and the buttons scrolls once the card would pass the
+            // bottom of the screen, so a long answer or several pictures stay reachable.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    if model.state == .thinking {
+                        Text("Looking at the box…").font(.system(size: 15)).foregroundColor(.llFaint)
                     }
-                }
-            }
-            if let working = model.working {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text(working).font(.system(size: 14)).foregroundColor(.llFaint)
-                }
-            }
-            if let plan = model.plan { planView(plan) }
-            ForEach(Array(model.results.enumerated()), id: \.offset) { i, p in
-                proposalView(p) { d in model.onResultDestination?(i, d) }
-            }
-            if let p = model.proposal { proposalView(p) { d in model.onDestination?(d) } }
-            if let q = model.question {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(q.text).font(.system(size: 15, weight: .medium)).foregroundColor(.llText)
-                    FlowRow(items: q.options) { option in
-                        chip(option, primary: false) { model.onAnswer?(option) }
-                    }
-                }
-            }
-            if let step = model.step {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(step.title).font(.system(size: 14, weight: .semibold)).foregroundColor(.llText)
+                    if !model.answer.isEmpty {
+                        ScrollView {
+                            Text(rendered)
+                                .font(.system(size: 15))
+                                .lineSpacing(4)
+                                .foregroundColor(.llText)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(maxHeight: 360)
                         .fixedSize(horizontal: false, vertical: true)
-                    Button { model.stepDetailOpen.toggle() } label: {
-                        Text(model.stepDetailOpen ? "Hide details" : "Details").font(.system(size: 12)).foregroundColor(.llFaint)
                     }
-                    .buttonStyle(.plain)
-                    if model.stepDetailOpen {
-                        Text(step.detail).font(.system(size: 12, design: .monospaced)).foregroundColor(.llSub)
-                            .lineLimit(8).textSelection(.enabled)
+                    if !model.log.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(Array(model.log.suffix(6).enumerated()), id: \.offset) { _, line in
+                                Text(line).font(.system(size: 12, design: .monospaced)).foregroundColor(.llFaint)
+                                    .lineLimit(1).truncationMode(.tail)
+                            }
+                        }
                     }
-                    HStack(spacing: 8) {
-                        chip("Run", primary: true) { model.onStep?(true, false) }
-                        chip("Run all", primary: false) { model.onStep?(true, true) }
-                        chip("Skip", primary: false) { model.onStep?(false, false) }
+                    if let working = model.working {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text(working).font(.system(size: 14)).foregroundColor(.llFaint)
+                        }
+                    }
+                    if let plan = model.plan { planView(plan) }
+                    ForEach(Array(model.results.enumerated()), id: \.offset) { i, p in
+                        proposalView(p) { d in model.onResultDestination?(i, d) }
+                    }
+                    if let p = model.proposal { proposalView(p) { d in model.onDestination?(d) } }
+                    if let q = model.question {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(q.text).font(.system(size: 15, weight: .medium)).foregroundColor(.llText)
+                            FlowRow(items: q.options) { option in
+                                chip(option, primary: false) { model.onAnswer?(option) }
+                            }
+                        }
+                    }
+                    if let step = model.step {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(step.title).font(.system(size: 14, weight: .semibold)).foregroundColor(.llText)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Button { model.stepDetailOpen.toggle() } label: {
+                                Text(model.stepDetailOpen ? "Hide details" : "Details").font(.system(size: 12)).foregroundColor(.llFaint)
+                            }
+                            .buttonStyle(.plain)
+                            if model.stepDetailOpen {
+                                Text(step.detail).font(.system(size: 12, design: .monospaced)).foregroundColor(.llSub)
+                                    .lineLimit(8).textSelection(.enabled)
+                            }
+                            HStack(spacing: 8) {
+                                chip("Run", primary: true) { model.onStep?(true, false) }
+                                chip("Run all", primary: false) { model.onStep?(true, true) }
+                                chip("Skip", primary: false) { model.onStep?(false, false) }
+                            }
+                        }
+                        .padding(12)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.llWell))
+                    }
+                    if let error = model.error {
+                        Text(error).font(.system(size: 14)).foregroundColor(.llDanger)
+                            .textSelection(.enabled)
                     }
                 }
-                .padding(12)
-                .background(RoundedRectangle(cornerRadius: 10).fill(Color.llWell))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(GeometryReader { g in Color.clear.preference(key: BodyHeightKey.self, value: g.size.height) })
             }
-            if let error = model.error {
-                Text(error).font(.system(size: 14)).foregroundColor(.llDanger)
-                    .textSelection(.enabled)
-            }
+            .onPreferenceChange(BodyHeightKey.self) { h in if abs(model.bodyHeight - h) > 0.5 { model.bodyHeight = h } }
+            .frame(height: min(model.bodyHeight, bodyLimit))
             if model.askingMore {
                 TextField("Ask more about the box", text: $model.followUp, axis: .vertical)
                     .textFieldStyle(.plain)

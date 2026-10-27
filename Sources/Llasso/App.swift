@@ -139,6 +139,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        if CommandLine.arguments.contains("--tallcardtest") {
+            // A card with two big pictures, laid out off screen and saved as tallcard.png.
+            Task { @MainActor in
+                let card = CardModel()
+                card.title = "Create two illustrations in this style"
+                card.state = .done
+                card.route = RouteLine(work: "Image", model: "Seedream 5.0 Flash", auto: false, reason: "")
+                func square(_ hue: CGFloat) -> Data {
+                    let img = NSImage(size: NSSize(width: 1024, height: 1024), flipped: false) { r in
+                        NSGradient(starting: NSColor(hue: hue, saturation: 0.5, brightness: 0.9, alpha: 1),
+                                   ending: NSColor(hue: hue + 0.1, saturation: 0.7, brightness: 0.5, alpha: 1))?.draw(in: r, angle: 90)
+                        return true
+                    }
+                    return NSBitmapImageRep(data: img.tiffRepresentation!)!.representation(using: .png, properties: [:])!
+                }
+                var a = ProposalCard(summary: "Looking at the ring", destinations: [.saveAs, .copy]); a.image = square(0.55)
+                var b = ProposalCard(summary: "The proposal", destinations: [.saveAs, .copy]); b.image = square(0.05)
+                card.results = [a, b]
+                var height: CGFloat = 0
+                let view = NSHostingView(rootView: CardView(model: card) { h in height = h })
+                let panel = NSWindow(contentRect: CGRect(x: -6000, y: 0, width: 520 + 2 * Glass.margin, height: 400),
+                                     styleMask: [.borderless], backing: .buffered, defer: false)
+                panel.contentView = view
+                panel.orderFrontRegardless()
+                for _ in 0..<10 { try? await Task.sleep(nanoseconds: 200_000_000); if height > 0 { panel.setContentSize(CGSize(width: panel.frame.width, height: height)) } }
+                var r: [String: Any] = ["cardHeight": height, "screenHeight": NSScreen.main?.visibleFrame.height ?? 0]
+                if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                    view.cacheDisplay(in: view.bounds, to: rep)
+                    try? rep.representation(using: .png, properties: [:])?.write(to: History.folder.appendingPathComponent("tallcard.png"))
+                }
+                if let scroll = SelfTest.firstScrollView(in: view), let doc = scroll.documentView {
+                    r["middleFull"] = doc.frame.height
+                    r["middleShown"] = scroll.contentView.bounds.height
+                }
+                SelfTest.write(r, "tallcard.json")
+                NSApp.terminate(nil)
+            }
+        }
         if CommandLine.arguments.contains("--plantest") {
             Task { @MainActor in await SelfTest.plan(); NSApp.terminate(nil) }
         }

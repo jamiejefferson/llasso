@@ -111,6 +111,36 @@ extension SelfTest {
             job.card.results = [caption, made]
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             await shoot(CGRect(x: v.maxX - 640, y: v.maxY - 1100, width: 640, height: 1100), "look-\(name)-7f-plan-results")
+            // Two square pictures and a caption: taller than the screen, so the middle scrolls
+            // and the buttons stay in view.
+            func square(_ hue: CGFloat) -> Data {
+                let img = NSImage(size: NSSize(width: 1024, height: 1024), flipped: false) { r in
+                    NSGradient(starting: NSColor(hue: hue, saturation: 0.5, brightness: 0.9, alpha: 1),
+                               ending: NSColor(hue: hue + 0.1, saturation: 0.7, brightness: 0.5, alpha: 1))?.draw(in: r, angle: 90)
+                    return true
+                }
+                return NSBitmapImageRep(data: img.tiffRepresentation!)!.representation(using: .png, properties: [:])!
+            }
+            var first = ProposalCard(summary: "The van, flat illustration", destinations: [.saveAs, .copy])
+            first.image = square(0.55)
+            var second = ProposalCard(summary: "The van at dusk", destinations: [.saveAs, .copy])
+            second.image = square(0.05)
+            job.card.plan = nil
+            job.card.results = [first, second, caption]
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            await shoot(CGRect(x: v.maxX - 640, y: v.minY, width: 640, height: v.height), "look-\(name)-7g-tall")
+            var r: [String: Any] = [:]
+            if let panel = NSApp.windows.filter({ $0.isVisible && $0 is FloatingPanel }).max(by: { $0.frame.height < $1.frame.height }) {
+                r["tall.cardFitsScreen"] = panel.frame.minY >= v.minY && panel.frame.maxY <= v.maxY + Glass.margin
+                if let scroll = Self.firstScrollView(in: panel.contentView), let doc = scroll.documentView {
+                    r["tall.scrolls"] = doc.frame.height > scroll.contentView.bounds.height
+                    scroll.contentView.scroll(to: CGPoint(x: 0, y: max(0, doc.frame.height - scroll.contentView.bounds.height)))
+                    scroll.reflectScrolledClipView(scroll.contentView)
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    await shoot(CGRect(x: v.maxX - 640, y: v.minY, width: 640, height: v.height), "look-\(name)-7h-tall-scrolled")
+                }
+            }
+            SelfTest.write(r, "looktest-tall-\(name).json")
             job.close()
             backdrop.orderOut(nil)
 
