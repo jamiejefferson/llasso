@@ -10,7 +10,9 @@ import LlassoKit
 enum ModelBrowserWindow {
     private static var window: NSWindow?
 
-    static func show(_ work: Work) {
+    static func show(_ work: Work) { show(ModelStore.shared.category(work)) }
+
+    static func show(_ category: WorkCategory) {
         window?.close()
         let w = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1040, height: 760),
                          styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
@@ -19,7 +21,7 @@ enum ModelBrowserWindow {
         w.title = "Choose a model"
         w.isReleasedWhenClosed = false
         w.minSize = CGSize(width: 860, height: 600)
-        w.contentView = NSHostingView(rootView: ModelBrowserView(work: work) { [weak w] in w?.close() })
+        w.contentView = NSHostingView(rootView: ModelBrowserView(category: category) { [weak w] in w?.close() })
         w.center()
         window = w
         NSApp.activate(ignoringOtherApps: true)
@@ -45,23 +47,31 @@ final class BrowserState: ObservableObject {
 }
 
 struct ModelBrowserView: View {
-    let work: Work
+    let category: WorkCategory
     var onClose: () -> Void
     @ObservedObject private var store = ModelStore.shared
     @ObservedObject private var state: BrowserState
 
-    init(work: Work, onClose: @escaping () -> Void) {
-        self.work = work
+    init(category: WorkCategory, onClose: @escaping () -> Void) {
+        self.category = category
         self.onClose = onClose
-        state = BrowserState(selected: ModelStore.shared.pin(for: work) ?? BrowserState.auto)
+        state = BrowserState(selected: ModelStore.shared.pin(for: category) ?? BrowserState.auto)
     }
+
+    init(work: Work, onClose: @escaping () -> Void) {
+        self.init(category: ModelStore.shared.category(work), onClose: onClose)
+    }
+
+    /// The built-in work the category runs as, which sets the list and the ratings.
+    private var work: Work { category.base }
 
     private var kind: ModelKind { work.kind }
     private var all: [ModelInfo] { store.models(kind) }
     /// Every model in the router's order for this work.
     /// Models that can do this work come first, in the router's order; the rest follow.
     private var ranked: [Scored] {
-        let ok = ModelStore.usable(for: work)
+        let usable = ModelStore.usable(for: work)
+        let ok: (ModelInfo) -> Bool = { usable($0) && category.fits($0) }
         return Router.score(all.filter(ok), for: work, difficulty: .moderate, lean: store.lean)
             + Router.score(all.filter { !ok($0) }, for: work, difficulty: .moderate, lean: store.lean).map { var s = $0; s.known = false; return s }
     }
@@ -113,7 +123,7 @@ struct ModelBrowserView: View {
     private var head: some View {
         HStack(alignment: .bottom) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("\(work.label) · \(kind.label)").font(.system(size: 10, weight: .semibold)).tracking(0.8)
+                Text("\(category.name) · \(kind.label)").font(.system(size: 10, weight: .semibold)).tracking(0.8)
                     .textCase(.uppercase).foregroundStyle(.secondary)
                 Text("Choose a model").font(.system(size: 26, weight: .bold)).tracking(-0.5)
             }
@@ -139,7 +149,7 @@ struct ModelBrowserView: View {
             HStack(spacing: 6) {
                 Text("Sort").foregroundStyle(.secondary)
                 Picker("", selection: $state.sort) {
-                    Text("Best for \(work.label.lowercased())").tag(BrowserState.Sort.best)
+                    Text("Best for \(category.name.lowercased())").tag(BrowserState.Sort.best)
                     Text("Cheapest first").tag(BrowserState.Sort.cheapest)
                     Text("Newest first").tag(BrowserState.Sort.newest)
                     Text("Name").tag(BrowserState.Sort.name)
@@ -264,7 +274,7 @@ struct ModelBrowserView: View {
         }
     }
 
-    private var autoPick: Choice { store.choose(work) }
+    private var autoPick: Choice { store.choose(category) }
 
     private var autoRow: some View {
         let on = state.selected == BrowserState.auto
@@ -272,7 +282,7 @@ struct ModelBrowserView: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text("Auto").font(.system(size: 14.5, weight: .semibold))
-                    if store.pin(for: work) == nil { inUse }
+                    if store.pin(for: category) == nil { inUse }
                 }
                 Text("Llasso picks for each request · now \(autoPick.model.name)").font(.system(size: 12.5))
                     .foregroundStyle(.secondary).lineLimit(1)
@@ -295,10 +305,12 @@ struct ModelBrowserView: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(m.name).font(.system(size: 14.5, weight: .semibold)).lineLimit(1)
-                    if store.pin(for: work) == m.id { inUse }
+                    if store.pin(for: category) == m.id { inUse }
                 }
                 Text(m.utility ? m.maker + " · a tool for existing clips"
-                     : ModelStore.usable(for: work)(m) ? m.maker : m.maker + " · can't take the boxed picture").font(.system(size: 12.5))
+                     : ModelStore.usable(for: work)(m) && category.fits(m) ? m.maker
+                     : !category.fits(m) ? m.maker + " · " + (category.sound == .speech ? "doesn't speak" : "doesn't make music")
+                     : m.maker + " · can't take the boxed picture").font(.system(size: 12.5))
                     .foregroundStyle(.secondary).lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -368,7 +380,7 @@ struct ModelBrowserView: View {
     private var autoDetail: some View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 6) {
-                if store.pin(for: work) == nil { inUse }
+                if store.pin(for: category) == nil { inUse }
                 Text("Auto").font(.system(size: 22, weight: .bold))
                 Text("Llasso reads each request, then picks the model that suits it best.").foregroundStyle(.secondary)
             }
@@ -376,7 +388,7 @@ struct ModelBrowserView: View {
                 .font(.system(size: 14)).lineSpacing(4).foregroundStyle(.secondary)
             VStack(spacing: 0) {
                 ForEach(Difficulty.allCases, id: \.self) { d in
-                    let c = store.choose(work, difficulty: d)
+                    let c = store.choose(category, difficulty: d)
                     fact(d == .simple ? "A quick request" : d == .moderate ? "An everyday request" : "A long or hard request", c.model.name)
                 }
             }
@@ -390,7 +402,7 @@ struct ModelBrowserView: View {
         let scored = rank.map { ranked[$0] }
         return VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 6) {
-                if store.pin(for: work) == m.id { inUse }
+                if store.pin(for: category) == m.id { inUse }
                 Text(m.name).font(.system(size: 22, weight: .bold)).tracking(-0.3)
                 Text(m.maker + (m.created.map { " · released " + Self.month($0) } ?? "")).foregroundStyle(.secondary)
             }
@@ -406,11 +418,11 @@ struct ModelBrowserView: View {
                 if let iq = m.bench.intelligence { fact("Intelligence index", String(format: "%.1f", iq), figure: true) }
                 if let elo = Router.arenaElo(m) { fact("Design Arena", String(format: "%.0f Elo", elo), figure: true) }
                 if let rank, let scored, scored.known, !m.utility {
-                    fact("For \(work.label.lowercased())", "#\(rank + 1) of \(ranked.filter(\.known).count) · \(scored.family)")
+                    fact("For \(category.name.lowercased())", "#\(rank + 1) of \(ranked.filter(\.known).count) · \(scored.family)")
                 } else if m.utility {
-                    fact("For \(work.label.lowercased())", "Works on existing clips; Auto never picks it")
+                    fact("For \(category.name.lowercased())", "Works on existing clips; Auto never picks it")
                 } else if scored != nil {
-                    fact("For \(work.label.lowercased())", "Unrated; Auto never picks it")
+                    fact("For \(category.name.lowercased())", "Unrated; Auto never picks it")
                 }
                 if !m.durations.isEmpty { fact("Lengths", m.durations.map { "\($0) s" }.joined(separator: ", ")) }
                 if !m.voices.isEmpty { fact("Voices", "\(m.voices.count), e.g. " + m.voices.prefix(3).joined(separator: ", ")) }
@@ -446,14 +458,14 @@ struct ModelBrowserView: View {
     // MARK: Foot
 
     private var foot: some View {
-        let current = store.pin(for: work) ?? BrowserState.auto
+        let current = store.pin(for: category) ?? BrowserState.auto
         let name = selectedModel?.name ?? "Auto"
         return HStack(spacing: 10) {
             Text(footNote).foregroundStyle(.secondary).font(.system(size: 13))
             Spacer()
             Button("Cancel", action: onClose).controlSize(.large)
             Button((state.selected == current ? "Keep " : "Use ") + name) {
-                store.setPin(state.selected == BrowserState.auto ? nil : state.selected, for: work)
+                store.setPin(state.selected == BrowserState.auto ? nil : state.selected, for: category)
                 onClose()
             }
             .buttonStyle(.borderedProminent).controlSize(.large).keyboardShortcut(.defaultAction)

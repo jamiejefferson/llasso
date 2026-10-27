@@ -287,6 +287,44 @@ if let dir = ProcessInfo.processInfo.environment["LLASSO_CATALOGUES"] {
     }
 }
 
+// Categories: the person's own kinds of work, each running as a built-in one.
+let illustration = WorkCategory(id: "c-illus", name: "Illustration", base: .image,
+                                about: "Flat editorial illustrations and spot drawings", keywords: ["illustration", "spot drawing"])
+let voice = WorkCategory(id: "c-voice", name: "Voice", base: .sound, about: "Voice-overs read in a warm voice", keywords: ["voice"], sound: .speech)
+let mine = WorkCategory.merged([illustration, voice])
+check("categories keep all seven built-ins first", mine.prefix(7).map(\.id) == Work.allCases.map(\.rawValue) && mine.count == 9)
+check("an edited built-in replaces the default", WorkCategory.merged([WorkCategory(id: "image", name: "Pictures", base: .image, about: "x")])
+      .first { $0.id == "image" }?.name == "Pictures")
+check("a category word picks it", Reader.read("make an illustration of this van", kind: .webPage, categories: mine).category == "c-illus")
+check("the word picks it whole, not inside another word", Reader.read("make a voiceover", kind: .webPage, categories: mine).category != "c-voice")
+check("a category runs as its base work", Reader.read("add a voice to this", kind: .webPage, categories: mine).work == .sound)
+check("no category word falls to the built-in rules", Reader.read("rewrite this paragraph", kind: .editableText, categories: mine).category == "writing")
+var speaker = ModelInfo(id: "a/tts", kind: .sound); speaker.sound = .speech
+var composer = ModelInfo(id: "a/lyria", kind: .sound); composer.sound = .music
+check("voice takes speech models only", voice.fits(speaker) && !voice.fits(composer))
+check("an untouched built-in keeps Jev's tuned wording", WorkCategory.builtIn(.design).criterion == Work.design.criterion)
+let jevBody = Jev.request(prompt: "x", box: "y", categories: mine)
+let criteria = ((jevBody["questions"] as? [String: Any])?["work"] as? [String: Any])?["criteria"] as? [String: String] ?? [:]
+check("Jev is offered every category", criteria.count == 9 && criteria["c-illus"]?.contains("editorial") == true)
+let custom = Jev.reading(from: Data(#"{"answers":{"work":{"choice":"c-illus","confidence":0.9},"difficulty":{"choice":"simple","confidence":1}}}"#.utf8), categories: mine)
+check("Jev's pick of a category reads as it", custom?.category == "c-illus" && custom?.work == .image)
+
+// With LLASSO_LIVE_JEV=1 and a key, Jev picks between the built-ins and two of the person's own.
+if ProcessInfo.processInfo.environment["LLASSO_LIVE_JEV"] == "1",
+   let key = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"], !key.isEmpty {
+    let client = OpenRouterClient(apiKey: key)
+    let semJ = DispatchSemaphore(value: 0)
+    Task {
+        let a = await client.jev(prompt: "draw a little flat editorial picture of a fox for the newsletter", box: "web page in Safari", categories: mine)
+        let b = await client.jev(prompt: "have someone read this paragraph out in a warm, friendly tone", box: "editable text in Notes", categories: mine)
+        print("jev categories: \(a?.category ?? "none") at \(a?.confidence ?? 0), \(b?.category ?? "none") at \(b?.confidence ?? 0)")
+        check("live jev picks Illustration", a?.category == "c-illus")
+        check("live jev picks Voice", b?.category == "c-voice")
+        semJ.signal()
+    }
+    semJ.wait()
+}
+
 // With LLASSO_LIVE_MEDIA=1 and a key, make one Jev reading, a two-second clip and a music clip.
 // These cost money, so they never run by default.
 if ProcessInfo.processInfo.environment["LLASSO_LIVE_MEDIA"] == "1",

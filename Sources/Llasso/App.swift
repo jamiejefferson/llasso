@@ -139,6 +139,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        if CommandLine.arguments.contains("--categorytest") {
+            // Settings' Models section with two categories of the person's own, and the editor
+            // for one of them, laid out off screen and saved as PNGs. Nothing is saved to settings.
+            Task { @MainActor in
+                let store = ModelStore.shared
+                let before = store.categories
+                store.previewCategories(before.filter { !$0.isBuiltIn } + [
+                    WorkCategory(id: "t-illus", name: "Illustration", base: .image, about: "Flat editorial illustrations and spot drawings",
+                                 keywords: ["illustration", "spot drawing"]),
+                    WorkCategory(id: "t-voice", name: "Voice", base: .sound, about: "Voice-overs in a warm voice", keywords: ["voice-over"], sound: .speech),
+                ])
+                @MainActor func render(_ view: some View, _ size: CGSize, _ name: String, scroll: Bool = true) async {
+                    let host = NSHostingView(rootView: view)
+                    let w = NSWindow(contentRect: CGRect(origin: CGPoint(x: -6000, y: 0), size: size), styleMask: [.titled], backing: .buffered, defer: false)
+                    w.contentView = host
+                    w.orderFrontRegardless()
+                    try? await Task.sleep(nanoseconds: 800_000_000)
+                    if scroll, let scroll = SelfTest.firstScrollView(in: host) {
+                        scroll.contentView.scroll(to: CGPoint(x: 0, y: 330))
+                        scroll.reflectScrolledClipView(scroll.contentView)
+                        try? await Task.sleep(nanoseconds: 300_000_000)
+                    }
+                    if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                        host.cacheDisplay(in: host.bounds, to: rep)
+                        try? rep.representation(using: .png, properties: [:])?.write(to: History.folder.appendingPathComponent(name))
+                    }
+                    w.orderOut(nil)
+                }
+                await render(SettingsView(), CGSize(width: 540, height: 780), "categories-settings.png")
+                await render(CategoryEditorView(draft: CategoryDraft(store.category(id: "t-voice"))) {}, CGSize(width: 480, height: 440), "categories-editor.png", scroll: false)
+                SelfTest.write(["voiceNow": store.media(.sound, reading: nil, sound: .speech).model.name,
+                                "illustrationNow": store.choose(store.category(id: "t-illus")!).model.name,
+                                "categories": store.categories.map(\.name)], "categorytest.json")
+                store.previewCategories(before.filter { !$0.isBuiltIn })
+                NSApp.terminate(nil)
+            }
+        }
         if CommandLine.arguments.contains("--tallcardtest") {
             // A card with two big pictures, laid out off screen and saved as tallcard.png.
             Task { @MainActor in
@@ -320,7 +357,8 @@ struct ModelsSection: View {
                 ForEach(Lean.allCases) { Text($0.label).tag($0) }
             }
             .pickerStyle(.segmented)
-            ForEach(Work.allCases) { work in row(work) }
+            ForEach(store.categories) { c in row(c) }
+            Button("Add a category…") { CategoryEditorWindow.show(nil) }
             Toggle(isOn: $store.useJev) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Read requests with Jev")
@@ -336,32 +374,35 @@ struct ModelsSection: View {
         } header: {
             Text("Models")
         } footer: {
-            Text("Auto picks the best model for each request from OpenRouter's live list, weighing benchmarks, price and speed. A model you choose for a kind of work is always used for it. The card names the model and says why.")
+            Text("Auto picks the best model for each request from OpenRouter's live list, weighing benchmarks, price and speed. A model you choose for a category is always used for it. Add a category, such as Illustration or Voice, to give a kind of request its own model. The card names the category, the model and why.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .onAppear { store.refresh() }
     }
 
-    private func row(_ work: Work) -> some View {
-        let pinned = store.pin(for: work)
+    private func row(_ c: WorkCategory) -> some View {
+        let work = c.base
+        let pinned = store.pin(for: c)
         let m = pinned.map { store.model($0, kind: work.kind) ?? ModelInfo(id: $0, kind: work.kind) }
         return HStack(spacing: 12) {
             Image(systemName: icon(work)).frame(width: 22).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
-                Text(work.label)
+                Text(c.isBuiltIn ? c.name : "\(c.name) · \(work.label.lowercased())")
                 Group {
                     if let m {
                         Text(m.name + (Prices.line(m).headline.map { " · " + $0 + " " + Prices.unit(work.kind).lowercased() } ?? ""))
                     } else {
-                        Text("Auto · now \(store.choose(work).model.name)")
+                        Text("Auto · now \(store.choose(c).model.name)")
                     }
                 }
                 .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
-            Button("Change") { ModelBrowserWindow.show(work) }
+            Button { CategoryEditorWindow.show(c) } label: { Image(systemName: "pencil") }
+                .buttonStyle(.borderless).help("Edit \(c.name)")
+            Button("Change") { ModelBrowserWindow.show(c) }
         }
-        .help(work.blurb)
+        .help(c.about)
     }
 
     private var listStatus: String {

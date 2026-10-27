@@ -208,8 +208,8 @@ final class Job {
         let choice = ModelStore.shared.chat(for: r)
         chatChoice = choice
         // Pictures, clips and sound are made by their own model, so the card names that one.
-        let shown = r.work.kind == .chat ? choice : ModelStore.shared.choose(r.work, difficulty: r.difficulty)
-        card.route = RouteLine(work: r.work.label, model: shown.model.name, auto: shown.auto, reason: shown.reason)
+        let shown = r.work.kind == .chat ? choice : ModelStore.shared.media(r.work, reading: r)
+        card.route = RouteLine(work: shown.label ?? r.work.label, model: shown.model.name, auto: shown.auto, reason: shown.reason)
         Log.write("router: \(r.work.rawValue)/\(r.difficulty.rawValue) by \(r.source.rawValue) → \(choice.model.id)\(choice.auto ? "" : " (chosen)")")
     }
 
@@ -457,7 +457,7 @@ final class Job {
     // MARK: Making
 
     private func makeImage(_ instruction: String, sources: [Data]) async throws -> (Data, Choice) {
-        let choice = ModelStore.shared.choose(.image, difficulty: reading?.difficulty ?? .moderate)
+        let choice = ModelStore.shared.media(.image, reading: reading)
         card.working = "Making the image with \(choice.model.name)…"
         let image = try await Settings.shared.client.image(model: choice.model.id, prompt: instruction,
                                                            sources: sources, makes: choice.model.makes)
@@ -466,7 +466,7 @@ final class Job {
 
     /// A clip, starting from `frame` when the model can start from a picture.
     private func makeVideo(_ prompt: String, frame: Data?, seconds: Int?, aspect: String?) async throws -> (Data, Choice) {
-        let choice = ModelStore.shared.choose(.motion, difficulty: reading?.difficulty ?? .moderate)
+        let choice = ModelStore.shared.media(.motion, reading: reading)
         let m = choice.model
         let first = m.frames.contains("first_frame") || m.frames.isEmpty ? frame : nil
         let shape = aspect ?? Self.aspect(of: box.rect.size, from: m.aspects)
@@ -494,7 +494,7 @@ final class Job {
     }
 
     private func soundChoice(_ type: SoundType) -> Choice {
-        ModelStore.shared.choose(.sound, difficulty: reading?.difficulty ?? .moderate, fits: { $0.sound == type })
+        ModelStore.shared.media(.sound, reading: reading, sound: type)
     }
 
     // MARK: Plans
@@ -519,7 +519,8 @@ final class Job {
     private func choice(for step: PlanStep) -> Choice? {
         guard let work = step.work else { return nil }
         if work == .sound { return soundChoice(step.speech ? .speech : .music) }
-        return ModelStore.shared.choose(work, difficulty: reading?.difficulty ?? .moderate)
+        return work.kind == .chat ? ModelStore.shared.choose(work, difficulty: reading?.difficulty ?? .moderate)
+            : ModelStore.shared.media(work, reading: reading)
     }
 
     /// Show the plan, wait for a yes, make each step on its own model, then show the results.
@@ -829,7 +830,7 @@ final class Job {
 
     /// The line under a made thing that says which model made it and why.
     static func madeBy(_ c: Choice) -> String {
-        "Made with \(c.model.name). " + (c.auto ? c.reason : "Your choice for \(c.work.label.lowercased()).")
+        "Made with \(c.model.name). " + (c.auto ? c.reason : "Your choice for \((c.label ?? c.work.label).lowercased()).")
     }
 
     /// A temporary copy the card can play from; nothing is saved anywhere the user keeps.

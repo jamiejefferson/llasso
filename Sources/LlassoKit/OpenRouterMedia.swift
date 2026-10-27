@@ -27,13 +27,13 @@ extension OpenRouterClient {
     }
 
     /// Ask Jev what a request is for. Nil when it can't answer within its time limit.
-    public func jev(prompt: String, box: String) async -> Reading? {
-        guard !apiKey.isEmpty, var req = try? request(path: "decisions", body: Jev.request(prompt: prompt, box: box)) else { return nil }
+    public func jev(prompt: String, box: String, categories: [WorkCategory] = WorkCategory.builtIns) async -> Reading? {
+        guard !apiKey.isEmpty, var req = try? request(path: "decisions", body: Jev.request(prompt: prompt, box: box, categories: categories)) else { return nil }
         req.url = URL(string: Jev.path)
         req.timeoutInterval = Jev.timeout
         guard let (data, response) = try? await URLSession.shared.data(for: req),
               (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-        return Jev.reading(from: data)
+        return Jev.reading(from: data, categories: categories)
     }
 
     /// Make a video clip. Video is a job OpenRouter runs in the background: submit it, poll
