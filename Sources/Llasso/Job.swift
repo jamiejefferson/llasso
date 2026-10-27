@@ -38,6 +38,8 @@ final class Job {
     private var editedImage: Data?
     /// A clip or sound made for this request, and its file extension.
     private var media: (data: Data, ext: String)?
+    /// What a plan made, in the order the card shows it.
+    private var planResults: [Made] = []
     /// What the router read the request as, started while the screen is captured.
     private var readingTask: Task<Reading, Never>?
     private var reading: Reading?
@@ -74,6 +76,8 @@ final class Job {
             self?.decide(run ? "run" : "skip")
         }
         card.onDestination = { [weak self] d in self?.deliver(to: d) }
+        card.onResultDestination = { [weak self] i, d in self?.deliver(to: d, result: i) }
+        card.onPlan = { [weak self] yes in self?.decide(yes ? "run" : nil) }
         card.title = "…"
         watch = card.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async { self?.cardChanged() }
@@ -86,6 +90,7 @@ final class Job {
     private func cardChanged() {
         guard !closed else { return }
         let result = !card.answer.isEmpty || card.proposal != nil || card.question != nil || card.step != nil
+            || card.plan != nil || !card.results.isEmpty
             || card.error != nil || (card.state == .done && card.working == nil)
         if result && !hadResult && !isVisible { show() }
         hadResult = result
@@ -100,7 +105,8 @@ final class Job {
     var isRunning: Bool { !closed && (card.state == .thinking || card.state == .streaming || card.working != nil) }
     /// Waiting on the user: a question, an approval, or a result not yet placed.
     var needsYou: Bool {
-        !closed && (card.question != nil || card.step != nil
+        !closed && (card.question != nil || card.step != nil || card.plan?.approved == false
+            || card.results.contains { $0.done == nil && !$0.destinations.isEmpty }
             || (card.proposal != nil && card.proposal?.done == nil && !(card.proposal?.destinations.isEmpty ?? true)))
     }
     var appName: String { context.appName ?? "" }
@@ -201,7 +207,9 @@ final class Job {
         reading = r
         let choice = ModelStore.shared.chat(for: r)
         chatChoice = choice
-        card.route = RouteLine(work: r.work.label, model: choice.model.name, auto: choice.auto, reason: choice.reason)
+        // Pictures, clips and sound are made by their own model, so the card names that one.
+        let shown = r.work.kind == .chat ? choice : ModelStore.shared.choose(r.work, difficulty: r.difficulty)
+        card.route = RouteLine(work: r.work.label, model: shown.model.name, auto: shown.auto, reason: shown.reason)
         Log.write("router: \(r.work.rawValue)/\(r.difficulty.rawValue) by \(r.source.rawValue) → \(choice.model.id)\(choice.auto ? "" : " (chosen)")")
     }
 
@@ -294,7 +302,7 @@ final class Job {
             card.working = nil
             card.state = .done
             finished()
-            if shown.isEmpty && card.proposal == nil && card.question == nil && card.log.isEmpty && card.error == nil {
+            if shown.isEmpty && card.proposal == nil && card.plan == nil && card.results.isEmpty && card.question == nil && card.log.isEmpty && card.error == nil {
                 card.error = "The model sent nothing back. Try again, or say what you want in more words."
             }
             Log.write("done: \(shown.count) chars, proposal \(card.proposal != nil), log \(card.log)")
@@ -334,6 +342,8 @@ final class Job {
             case .editCode:
                 return await editCode(instruction: args["instruction"] as? String ?? lastPrompt,
                                       summary: args["summary"] as? String ?? "")
+            case .makePlan:
+                return await runPlan(args)
             case .proposeText, .editImage, .setCells, .runScript, .makeVideo, .makeSound:
                 guard let p = builtin.proposal(args) else { return Outcome(text: "The arguments were incomplete.") }
                 return await propose(p)
@@ -381,13 +391,10 @@ final class Job {
             cardP.original = context.selectedText ?? context.fieldValue
         case .image(let instruction, _):
             guard let crop = capture?.crop else { return Outcome(text: "There is no image to edit.") }
-            // The boxed picture always goes along, so the model has to take pictures.
-            let choice = ModelStore.shared.choose(.image, difficulty: reading?.difficulty ?? .moderate)
-            card.working = "Making the image with \(choice.model.name)…"
             card.state = .thinking
             do {
-                let image = try await Settings.shared.client.image(model: choice.model.id,
-                                                                   prompt: instruction, source: crop)
+                // The boxed picture always goes along, so the model has to take pictures.
+                let (image, choice) = try await makeImage(instruction, sources: [crop])
                 card.working = nil
                 editedImage = image
                 cardP.image = image
@@ -402,22 +409,9 @@ final class Job {
         case .script(let source, _):
             cardP.script = source
         case .video(let prompt, let fromBox, let seconds, let aspect, _):
-            let choice = ModelStore.shared.choose(.motion, difficulty: reading?.difficulty ?? .moderate)
-            let m = choice.model
-            let frame = fromBox && (m.frames.contains("first_frame") || m.frames.isEmpty) ? capture?.crop : nil
-            let shape = aspect ?? Self.aspect(of: box.rect.size, from: m.aspects)
-            let length = Self.nearest(seconds ?? 5, in: m.durations)
-            let resolution = m.resolutions.first { $0 == "720p" } ?? m.resolutions.first { $0 == "768p" }
             card.state = .thinking
-            card.working = "Making a \(length.map { "\($0) s " } ?? "")clip with \(m.name). This can take a few minutes…"
             do {
-                let clip = try await Settings.shared.client.video(model: m.id, prompt: prompt, firstFrame: frame, seconds: length,
-                                                                  aspect: shape, resolution: resolution) { status in
-                    Task { @MainActor [weak self] in
-                        guard let self, self.card.working != nil else { return }
-                        self.card.working = "\(m.name): " + (status == "in_progress" ? "making the clip…" : "\(status.replacingOccurrences(of: "_", with: " "))…")
-                    }
-                }
+                let (clip, choice) = try await makeVideo(prompt, frame: fromBox ? capture?.crop : nil, seconds: seconds, aspect: aspect)
                 card.working = nil
                 media = (clip, "mp4")
                 cardP.mediaURL = Self.preview(clip, ext: "mp4")
@@ -428,17 +422,12 @@ final class Job {
                 return Outcome(text: "The video model failed: \(error.localizedDescription)", endsTurn: true)
             }
         case .sound(let prompt, let type, _):
-            let choice = ModelStore.shared.choose(.sound, difficulty: reading?.difficulty ?? .moderate, fits: { $0.sound == type })
             card.state = .thinking
-            card.working = (type == .speech ? "Recording the words with " : "Making the sound with ") + choice.model.name + "…"
             do {
-                let client = Settings.shared.client
-                let audio = type == .speech
-                    ? try await client.speech(model: choice.model.id, voice: Settings.voice(for: choice.model), text: prompt)
-                    : try await client.music(model: choice.model.id, prompt: prompt)
+                let (audio, choice) = try await makeSound(prompt, type: type)
                 card.working = nil
-                media = (audio, "mp3")
-                cardP.mediaURL = Self.preview(audio, ext: "mp3")
+                media = (audio, Audio.ext(of: audio))
+                cardP.mediaURL = Self.preview(audio, ext: Audio.ext(of: audio))
                 cardP.isAudio = true
                 cardP.madeBy = Self.madeBy(choice)
             } catch {
@@ -447,20 +436,237 @@ final class Job {
                 return Outcome(text: "The sound model failed: \(error.localizedDescription)", endsTurn: true)
             }
         }
-        // Text always checks whether it can go back where it came from, and asks first.
-        if case .text = p {
-            let app = context.appName ?? "the app"
-            if cardP.destinations.contains(where: { if case .replaceInPlace = $0 { return true }; return false }) {
-                cardP.ask = context.boxedRange != nil ? "Replace the boxed text in \(app) with this?"
-                    : context.canSetField ? "Replace what's in the field in \(app) with this?"
-                    : context.mayHoldSelection ? "Replace your selection in \(app) with this?"
-                    : "Replace the selected text in \(app) with this?"
-            } else {
-                cardP.note = "Llasso can't change the text in \(app) from here. Select the text and ask again to replace it, or copy this."
-            }
-        }
+        if case .text = p { askToReplace(&cardP) }
         card.proposal = cardP
         return Outcome(text: "Shown to the user, who will choose where it goes. Do not repeat it.", endsTurn: true)
+    }
+
+    /// Text always checks whether it can go back where it came from, and asks first.
+    private func askToReplace(_ cardP: inout ProposalCard) {
+        let app = context.appName ?? "the app"
+        if cardP.destinations.contains(where: { if case .replaceInPlace = $0 { return true }; return false }) {
+            cardP.ask = context.boxedRange != nil ? "Replace the boxed text in \(app) with this?"
+                : context.canSetField ? "Replace what's in the field in \(app) with this?"
+                : context.mayHoldSelection ? "Replace your selection in \(app) with this?"
+                : "Replace the selected text in \(app) with this?"
+        } else {
+            cardP.note = "Llasso can't change the text in \(app) from here. Select the text and ask again to replace it, or copy this."
+        }
+    }
+
+    // MARK: Making
+
+    private func makeImage(_ instruction: String, sources: [Data]) async throws -> (Data, Choice) {
+        let choice = ModelStore.shared.choose(.image, difficulty: reading?.difficulty ?? .moderate)
+        card.working = "Making the image with \(choice.model.name)…"
+        let image = try await Settings.shared.client.image(model: choice.model.id, prompt: instruction,
+                                                           sources: sources, makes: choice.model.makes)
+        return (image, choice)
+    }
+
+    /// A clip, starting from `frame` when the model can start from a picture.
+    private func makeVideo(_ prompt: String, frame: Data?, seconds: Int?, aspect: String?) async throws -> (Data, Choice) {
+        let choice = ModelStore.shared.choose(.motion, difficulty: reading?.difficulty ?? .moderate)
+        let m = choice.model
+        let first = m.frames.contains("first_frame") || m.frames.isEmpty ? frame : nil
+        let shape = aspect ?? Self.aspect(of: box.rect.size, from: m.aspects)
+        let length = Self.nearest(seconds ?? 5, in: m.durations)
+        let resolution = m.resolutions.first { $0 == "720p" } ?? m.resolutions.first { $0 == "768p" }
+        card.working = "Making a \(length.map { "\($0) s " } ?? "")clip with \(m.name). This can take a few minutes…"
+        let clip = try await Settings.shared.client.video(model: m.id, prompt: prompt, firstFrame: first, seconds: length,
+                                                          aspect: shape, resolution: resolution) { status in
+            Task { @MainActor [weak self] in
+                guard let self, self.card.working != nil else { return }
+                self.card.working = "\(m.name): " + (status == "in_progress" ? "making the clip…" : "\(status.replacingOccurrences(of: "_", with: " "))…")
+            }
+        }
+        return (clip, choice)
+    }
+
+    private func makeSound(_ prompt: String, type: SoundType) async throws -> (Data, Choice) {
+        let choice = soundChoice(type)
+        card.working = (type == .speech ? "Recording the words with " : "Making the sound with ") + choice.model.name + "…"
+        let client = Settings.shared.client
+        let audio = type == .speech
+            ? try await client.speech(model: choice.model.id, voice: Settings.voice(for: choice.model), text: prompt)
+            : try await client.music(model: choice.model.id, prompt: prompt)
+        return (audio, choice)
+    }
+
+    private func soundChoice(_ type: SoundType) -> Choice {
+        ModelStore.shared.choose(.sound, difficulty: reading?.difficulty ?? .moderate, fits: { $0.sound == type })
+    }
+
+    // MARK: Plans
+
+    /// One thing a plan's step made, and the model that made it.
+    private struct Piece {
+        enum Kind { case text(String), image(Data), video(Data), sound(Data) }
+        var kind: Kind
+        var madeBy: String
+        /// The model's name, for a combine's line.
+        var model = ""
+    }
+
+    /// One result on the card from a plan, with what its chips need.
+    private struct Made {
+        var proposal: Proposal
+        var image: Data?
+        var media: (data: Data, ext: String)?
+    }
+
+    /// The model a step runs on; nil for a combine, which runs on this Mac.
+    private func choice(for step: PlanStep) -> Choice? {
+        guard let work = step.work else { return nil }
+        if work == .sound { return soundChoice(step.speech ? .speech : .music) }
+        return ModelStore.shared.choose(work, difficulty: reading?.difficulty ?? .moderate)
+    }
+
+    /// Show the plan, wait for a yes, make each step on its own model, then show the results.
+    private func runPlan(_ args: [String: Any]) async -> Outcome {
+        let plan: Plan
+        switch Plan.parse(args) {
+        case .failure(let e): return Outcome(text: "The plan can't run: \(e.message) Fix it and call make_plan again, or use one tool.")
+        case .success(let p): plan = p
+        }
+        var costs: [String] = []
+        let lines = plan.steps.map { step -> PlanCard.Line in
+            let c = choice(for: step)
+            if step.kind == .video, let m = c?.model, let perSecond = m.price.perSecond {
+                let seconds = Self.nearest(step.seconds ?? 5, in: m.durations) ?? 5
+                costs.append("The \(seconds) s clip costs \(Prices.money(perSecond * Double(seconds))) and can take a few minutes.")
+            }
+            let numbers = step.uses.compactMap { id in plan.steps.firstIndex { $0.id == id }.map { String($0 + 1) } }
+            return PlanCard.Line(id: step.id, label: step.label, model: c?.model.name ?? "On this Mac",
+                                 summary: step.summary.ifEmpty(step.instruction),
+                                 uses: numbers.isEmpty ? nil : "uses " + numbers.joined(separator: " and "))
+        }
+        card.plan = PlanCard(summary: plan.summary, lines: lines, note: costs.isEmpty ? nil : costs.joined(separator: " "))
+        card.state = .done
+        Log.write("plan: \(plan.steps.map { "\($0.id) \($0.kind.rawValue)\($0.uses.isEmpty ? "" : "<" + $0.uses.joined(separator: ","))" }.joined(separator: ", "))")
+        guard await waitForDecision() == "run" else {
+            card.plan = nil
+            card.log.append("– plan cancelled, nothing made")
+            return Outcome(text: "The user cancelled the plan, so nothing was made.", endsTurn: true)
+        }
+        card.plan?.approved = true
+        card.state = .thinking
+        actions.append("plan: \(plan.steps.count) steps")
+        var made: [String: Piece] = [:]
+        var failure: String?
+        for (i, step) in plan.steps.enumerated() {
+            if Task.isCancelled { return Outcome(text: "Stopped.", endsTurn: true) }
+            card.plan?.lines[i].status = .working
+            do {
+                made[step.id] = try await make(step, number: i + 1, from: made, plan: plan)
+                card.plan?.lines[i].status = .done
+            } catch {
+                card.plan?.lines[i].status = .failed
+                failure = "Step \(i + 1) (\(step.label.lowercased())): \(error.localizedDescription)"
+                break
+            }
+        }
+        card.working = nil
+        // When a step fails, everything already made is still shown, so nothing paid for is lost.
+        let shown = failure == nil ? plan.finals : plan.steps.filter { made[$0.id] != nil }
+        planResults = []
+        card.results = []
+        for step in shown {
+            guard let piece = made[step.id] else { continue }
+            let (m, cardP) = result(step, piece)
+            planResults.append(m)
+            card.results.append(cardP)
+        }
+        if let failure {
+            card.error = failure
+            return Outcome(text: "The plan stopped. \(failure). What was made so far is shown.", endsTurn: true)
+        }
+        return Outcome(text: "Made \(plan.steps.count) steps; the user sees \(shown.count) result\(shown.count == 1 ? "" : "s") and chooses where each goes. Do not repeat them.",
+                       endsTurn: true)
+    }
+
+    private func make(_ step: PlanStep, number: Int, from made: [String: Piece], plan: Plan) async throws -> Piece {
+        let inputs = step.uses.compactMap { made[$0] }
+        let texts = inputs.compactMap { if case .text(let t) = $0.kind { return t } else { return nil } }
+        let images = inputs.compactMap { if case .image(let d) = $0.kind { return d } else { return nil } }
+        let box = step.fromBox ? capture?.crop : nil
+        let withTexts = texts.isEmpty ? step.instruction
+            : step.instruction + "\n\nUse this text, made earlier for the same request:\n" + texts.joined(separator: "\n\n")
+        switch step.kind {
+        case .text:
+            let c = choice(for: step)!
+            card.working = "Writing with \(c.model.name)…"
+            var brief = "The user asked: \(lastPrompt)\n\nYour part of it: \(step.instruction)"
+            if let boxed = context.selectedText ?? context.fieldValue, !boxed.isEmpty { brief += "\n\nThe text in the box:\n" + boxed }
+            if !texts.isEmpty { brief += "\n\nText made earlier for this request:\n" + texts.joined(separator: "\n\n") }
+            brief += "\n\nReply with only the finished text, with no preamble. Use British English."
+            let parts: [ChatPart] = ([box].compactMap { $0 } + images).map { .png($0) } + [.text(brief)]
+            var out = ""
+            for try await piece in Settings.shared.client.streamChat(model: c.model.id, messages: [ChatMessage(role: "user", parts: parts)]) {
+                out += piece
+            }
+            let text = out.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { throw Combine.Failure(message: "the writer sent nothing back") }
+            return Piece(kind: .text(text), madeBy: Self.madeBy(c), model: c.model.name)
+        case .image:
+            let (image, c) = try await makeImage(withTexts, sources: [box].compactMap { $0 } + images)
+            return Piece(kind: .image(image), madeBy: Self.madeBy(c), model: c.model.name)
+        case .video:
+            let (clip, c) = try await makeVideo(withTexts, frame: images.first ?? box, seconds: step.seconds, aspect: nil)
+            return Piece(kind: .video(clip), madeBy: Self.madeBy(c), model: c.model.name)
+        case .sound:
+            // Speech reads out the text an earlier step wrote, when there is one.
+            let words = step.speech && !texts.isEmpty ? texts.joined(separator: "\n\n") : withTexts
+            let (audio, c) = try await makeSound(words, type: step.speech ? .speech : .music)
+            return Piece(kind: .sound(audio), madeBy: Self.madeBy(c), model: c.model.name)
+        case .combine:
+            card.working = "Joining the parts on this Mac…"
+            var picture: Piece.Kind?, sound: Data?
+            for p in inputs {
+                switch p.kind {
+                case .video, .image: picture = p.kind
+                case .sound(let d): sound = d
+                case .text: break
+                }
+            }
+            guard let sound, let picture else { throw Combine.Failure(message: "a combine needs a clip or picture and a sound") }
+            let clip: Data
+            switch picture {
+            case .video(let v): clip = try await Combine.clip(v, with: sound, soundExt: Audio.ext(of: sound))
+            case .image(let i): clip = try await Combine.still(i, with: sound, soundExt: Audio.ext(of: sound))
+            default: throw Combine.Failure(message: "a combine needs a clip or picture")
+            }
+            let parts = step.uses.compactMap { id -> String? in
+                guard let p = made[id], let n = plan.steps.firstIndex(where: { $0.id == id }) else { return nil }
+                return "step \(n + 1) by \(p.model)"
+            }
+            return Piece(kind: .video(clip), madeBy: "Joined on this Mac from " + parts.joined(separator: " and ") + ".")
+        }
+    }
+
+    /// A plan's piece as a result on the card, with the same chips a single result would get.
+    private func result(_ step: PlanStep, _ piece: Piece) -> (Made, ProposalCard) {
+        let summary = step.summary.ifEmpty(step.label)
+        let m: Made
+        switch piece.kind {
+        case .text(let t): m = Made(proposal: .text(text: t, summary: summary))
+        case .image(let d): m = Made(proposal: .image(instruction: step.instruction, summary: summary), image: d)
+        case .video(let d): m = Made(proposal: .video(prompt: step.instruction, fromBox: step.fromBox, seconds: step.seconds, aspect: nil, summary: summary), media: (d, "mp4"))
+        case .sound(let d): m = Made(proposal: .sound(prompt: step.instruction, type: step.speech ? .speech : .music, summary: summary), media: (d, Audio.ext(of: d)))
+        }
+        var cardP = ProposalCard(summary: summary, destinations: Actuator.destinations(for: m.proposal, context: context))
+        cardP.madeBy = piece.madeBy
+        switch piece.kind {
+        case .text(let t):
+            cardP.text = t
+            askToReplace(&cardP)
+        case .image(let d): cardP.image = d
+        case .video(let d): cardP.mediaURL = Self.preview(d, ext: "mp4")
+        case .sound(let d):
+            cardP.mediaURL = Self.preview(d, ext: Audio.ext(of: d))
+            cardP.isAudio = true
+        }
+        return (m, cardP)
     }
 
     /// Route A: Claude Code edits the project behind the box, between two snapshots.
@@ -552,28 +758,38 @@ final class Job {
     }
 
     /// The user tapped a destination on the proposal.
-    private func deliver(to d: Destination) {
+    /// `result` picks one of a plan's results; nil is the single proposal.
+    private func deliver(to d: Destination, result index: Int? = nil) {
         switch d {
         case .keepCode, .undoCode, .openCode: deliverCode(d); return
         default: break
         }
-        guard let p = proposal else { return }
+        let made: Made
+        if let index {
+            guard planResults.indices.contains(index) else { return }
+            made = planResults[index]
+        } else {
+            guard let p = proposal else { return }
+            made = Made(proposal: p, image: editedImage, media: media)
+        }
         let ctx = context
         let app = frontApp
-        let image = editedImage
         card.working = d == .run ? "Running…" : "Working…"
         Task {
             do {
-                let result = try await ActionQueue.run { try await self.act(p, to: d, context: ctx, app: app, image: image) }
+                let result = try await ActionQueue.run { try await self.act(made.proposal, to: d, context: ctx, app: app,
+                                                                             image: made.image, media: made.media) }
                 card.working = nil
-                card.proposal?.done = result
-                card.proposal?.note = nil
-                if case .undoText = d { card.proposal?.destinations = [.copy] }
-                if case .replaceInPlace = d { card.proposal?.destinations = [.undoText(app: ctx.appName ?? "the app"), .copy] }
-                if case .replaceImage(let name) = d { card.proposal?.destinations = [.undoImage(name: name), .copy, .saveAs] }
-                if case .undoImage = d { card.proposal?.destinations = [.copy, .saveAs] }
+                update(index) { p in
+                    p.done = result
+                    p.note = nil
+                    if case .undoText = d { p.destinations = [.copy] }
+                    if case .replaceInPlace = d { p.destinations = [.undoText(app: ctx.appName ?? "the app"), .copy] }
+                    if case .replaceImage(let name) = d { p.destinations = [.undoImage(name: name), .copy, .saveAs] }
+                    if case .undoImage = d { p.destinations = [.copy, .saveAs] }
+                }
                 actions.append(d.label)
-                messages.append(.user("(Llasso note, not from the user) The user chose “\(d.label)”. \(result)"))
+                messages.append(.user("(Llasso note, not from the user) The user chose “\(d.label)”\(index.map { " for result \($0 + 1)" } ?? ""). \(result)"))
                 History.append(prompt: lastPrompt, verb: verb, context: ctx, answer: card.answer,
                                model: modelID, actions: actions)
             } catch ActionError.cancelled {
@@ -585,8 +801,17 @@ final class Job {
         }
     }
 
+    /// Change the single proposal on the card, or one of a plan's results.
+    private func update(_ index: Int?, _ change: (inout ProposalCard) -> Void) {
+        if let index {
+            if card.results.indices.contains(index) { change(&card.results[index]) }
+        } else if card.proposal != nil {
+            change(&card.proposal!)
+        }
+    }
+
     private func act(_ p: Proposal, to d: Destination, context ctx: ScreenContext, app: NSRunningApplication?,
-                     image: Data?) async throws -> String {
+                     image: Data?, media: (data: Data, ext: String)?) async throws -> String {
         switch p {
         case .text(let text, _): return try await Actuator.text(text, to: d, context: ctx, app: app)
         case .image:

@@ -79,12 +79,13 @@ public enum BuiltinTool: String, CaseIterable, Sendable {
     case editCode = "edit_code"
     case makeVideo = "make_video"
     case makeSound = "make_sound"
+    case makePlan = "make_plan"
 
     public static func named(_ name: String) -> BuiltinTool? { BuiltinTool(rawValue: name) }
 
     /// The tools on offer for this box. Every one leaves the change to the user's tap.
     public static func available(for kind: ContentKind, hasSource: Bool = false) -> [BuiltinTool] {
-        var tools: [BuiltinTool] = [.askUser, .pointAt, .proposeText, .editImage, .makeVideo, .makeSound, .runScript]
+        var tools: [BuiltinTool] = [.askUser, .pointAt, .proposeText, .editImage, .makeVideo, .makeSound, .makePlan, .runScript]
         if kind == .spreadsheet { tools.append(.setCells) }
         if hasSource { tools.append(.editCode) }
         return tools
@@ -129,6 +130,25 @@ public enum BuiltinTool: String, CaseIterable, Sendable {
                        "prompt": ["type": "string", "description": "For music, the full description. For speech, exactly the words to say."],
                        "summary": summary],
                       ["type", "prompt", "summary"])
+        case .makePlan:
+            let step: [String: Any] = [
+                "type": "object",
+                "properties": [
+                    "id": ["type": "string", "description": "Short id, such as 1, 2, 3."],
+                    "kind": ["type": "string", "enum": PlanStep.Kind.allCases.map(\.rawValue),
+                             "description": "text, image, video or sound is made by the model for that kind of work. combine joins one clip or picture with one sound into a single clip, on the Mac."],
+                    "instruction": ["type": "string", "description": "The full instruction for this step's model, as you would give it to edit_image, make_video, make_sound or a writer. For speech, the exact words. Empty for combine."],
+                    "summary": ["type": "string", "description": "A few words for the plan on the card."],
+                    "uses": ["type": "array", "items": ["type": "string"], "description": "Ids of earlier steps whose results this step takes in: text goes into its instruction, pictures go in as images (a clip starts from the picture), and a combine takes a clip or picture and a sound."],
+                    "from_box": ["type": "boolean", "description": "Give this step the boxed picture too."],
+                    "seconds": ["type": "integer", "description": "Video only: length in seconds."],
+                    "sound_type": ["type": "string", "enum": ["music", "speech"]],
+                ],
+                "required": ["id", "kind", "summary"],
+            ]
+            return fn("Only when the request cannot be delivered as one result by a single other tool: it asks for two or more different things (say a caption and an illustration), or for one result assembled from parts that different models make (say a clip with its own jingle, joined by a combine step). Never use it when one tool call can do the job. The user approves the plan before anything is made, and sees every result no later step uses.",
+                      ["summary": summary, "steps": ["type": "array", "items": step, "minItems": 2, "maxItems": Plan.maxSteps]],
+                      ["summary", "steps"])
         case .setCells:
             return fn("Write values or formulas into the spreadsheet. Rows are lists of cell strings; a string starting with = is a formula. The user confirms before anything is written.",
                       ["start": ["type": "string", "description": "Top-left cell, e.g. D2. Omit to use the top-left of the selection."],
@@ -169,7 +189,7 @@ public enum BuiltinTool: String, CaseIterable, Sendable {
         case .makeSound:
             guard let p = a["prompt"] as? String else { return nil }
             return .sound(prompt: p, type: (a["type"] as? String) == "speech" ? .speech : .music, summary: summary)
-        case .askUser, .pointAt, .editCode:
+        case .askUser, .pointAt, .editCode, .makePlan:
             return nil
         }
     }

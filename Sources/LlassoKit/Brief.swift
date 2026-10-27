@@ -126,6 +126,9 @@ public enum Brief {
     - Video and sound: when the user wants a clip, animation or moving version of what is in \
     the box, call make_video. When they want music, a jingle, a sound effect or words read \
     aloud as a file, call make_sound. You can make both, so never reply that you can't.
+    - Several things in one request: only when no single tool call can deliver it (two or more \
+    different results, or one result built from parts made by different models), call make_plan \
+    once with every step. The user approves it first. Otherwise use one tool.
     - Spreadsheets: work out the answer from the cell values given, then call set_cells to \
     write results or formulas, and say in your reply what you calculated.
     - Help with an app: answer in plain steps, and call point_at to ring the control to use next.

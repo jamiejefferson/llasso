@@ -316,6 +316,32 @@ if ProcessInfo.processInfo.environment["LLASSO_LIVE_MEDIA"] == "1",
     }
     sem3.wait()
 }
+// Plans: two or more results, each on its own model; a combine joins a picture or clip with a sound.
+func planOf(_ steps: [[String: Any]]) -> Result<Plan, PlanError> { Plan.parse(["summary": "s", "steps": steps]) }
+let joined = planOf([["id": "1", "kind": "image", "instruction": "a van", "summary": "Van"],
+                     ["id": "2", "kind": "sound", "sound_type": "speech", "instruction": "Hello", "summary": "Line"],
+                     ["id": "3", "kind": "combine", "uses": ["1", "2"], "summary": "Join"]])
+if case .success(let p) = joined {
+    check("plan finals are what no later step uses", p.finals.map(\.id) == ["3"])
+    check("plan speech step reads as speech", p.steps[1].speech && p.steps[1].work == .sound && p.steps[1].label == "Speech")
+    check("plan combine runs on the Mac", p.steps[2].work == nil)
+} else { check("plan with a combine parses", false) }
+if case .success(let p) = planOf([["id": "a", "kind": "text", "instruction": "caption"], ["id": "b", "kind": "image", "instruction": "picture"]]) {
+    check("two separate results are both shown", p.finals.map(\.id) == ["a", "b"])
+} else { check("two-step plan parses", false) }
+check("one step is not a plan", (try? planOf([["kind": "text", "instruction": "x"]]).get()) == nil)
+check("a step can only use an earlier one", (try? planOf([["id": "1", "kind": "image", "instruction": "x", "uses": ["2"]],
+                                                         ["id": "2", "kind": "text", "instruction": "y"]]).get()) == nil)
+check("combine needs a picture and a sound", (try? planOf([["id": "1", "kind": "text", "instruction": "x"], ["id": "2", "kind": "text", "instruction": "y"],
+                                                          ["id": "3", "kind": "combine", "uses": ["1", "2"]]]).get()) == nil)
+check("unknown kind is refused", (try? planOf([["id": "1", "kind": "poem", "instruction": "x"], ["id": "2", "kind": "text", "instruction": "y"]]).get()) == nil)
+check("plan tool is offered", BuiltinTool.available(for: .image).contains(.makePlan))
+// Speech models that only send raw PCM come back as WAV.
+let wav = Audio.wav(pcm: Data(count: 48_000), contentType: "audio/pcm;rate=24000;channels=1")
+check("pcm wraps as wav", Audio.ext(of: wav) == "wav" && wav.count == 48_044)
+check("wav header carries the rate", wav.subdata(in: 24..<28).withUnsafeBytes { $0.load(as: UInt32.self) } == 24_000)
+check("mp3 stays mp3", Audio.ext(of: Data([0x49, 0x44, 0x33, 0, 0, 0, 0, 0, 0])) == "mp3")
+
 // A pasted key loses the wrapping copied with it, and OpenRouter's verdict on a key comes back as words.
 check("key loses quotes and Bearer", OpenRouterClient.cleanKey(" \u{201C}Bearer sk-or-v1-abc\u{201D}\n") == "sk-or-v1-abc")
 check("plain key unchanged", OpenRouterClient.cleanKey("sk-or-v1-abc") == "sk-or-v1-abc")

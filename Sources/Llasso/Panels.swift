@@ -274,6 +274,10 @@ final class CardModel: ObservableObject {
     @Published var working: String?
     /// The model this request runs on and why, under the title.
     @Published var route: RouteLine?
+    /// Several things made for one request: the steps, waiting for approval, then their progress.
+    @Published var plan: PlanCard?
+    /// What a plan made, each with its own chips.
+    @Published var results: [ProposalCard] = []
 
     var onCopy: (() -> Void)?
     var onStop: (() -> Void)?
@@ -283,13 +287,40 @@ final class CardModel: ObservableObject {
     var onAnswer: ((String) -> Void)?
     /// true runs this step, false skips it; `all` approves the rest of the job's steps too.
     var onStep: ((_ run: Bool, _ all: Bool) -> Void)?
+    /// true makes the plan, false cancels it.
+    var onPlan: ((Bool) -> Void)?
+    /// A chip under one of a plan's results.
+    var onResultDestination: ((Int, Destination) -> Void)?
 
     func resetAction() {
         proposal = nil
         question = nil
         step = nil
         working = nil
+        plan = nil
+        results = []
     }
+}
+
+/// A plan as the card shows it.
+struct PlanCard {
+    enum Status { case waiting, working, done, failed }
+    struct Line: Identifiable {
+        var id: String
+        var label: String
+        /// The model that makes this step, or "On this Mac" for a combine.
+        var model: String
+        var summary: String
+        /// "Uses 1 and 2", when the step takes in earlier results.
+        var uses: String?
+        var status: Status = .waiting
+    }
+    var summary: String
+    var lines: [Line]
+    /// Set once the user has said yes.
+    var approved = false
+    /// A figure worth knowing before saying yes, such as what the clip costs.
+    var note: String?
 }
 
 /// Which model a request runs on, as the card shows it.
@@ -403,7 +434,11 @@ struct CardView: View {
                     Text(working).font(.system(size: 14)).foregroundColor(.llFaint)
                 }
             }
-            if let p = model.proposal { proposalView(p) }
+            if let plan = model.plan { planView(plan) }
+            ForEach(Array(model.results.enumerated()), id: \.offset) { i, p in
+                proposalView(p) { d in model.onResultDestination?(i, d) }
+            }
+            if let p = model.proposal { proposalView(p) { d in model.onDestination?(d) } }
             if let q = model.question {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(q.text).font(.system(size: 15, weight: .medium)).foregroundColor(.llText)
@@ -475,7 +510,54 @@ struct CardView: View {
     }
 
     @ViewBuilder
-    private func proposalView(_ p: ProposalCard) -> some View {
+    private func planView(_ plan: PlanCard) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(plan.approved ? plan.summary : "Make this in \(plan.lines.count) steps?")
+                .font(.system(size: 14, weight: .semibold)).foregroundColor(.llText)
+            if !plan.approved && !plan.summary.isEmpty {
+                Text(plan.summary).font(.system(size: 13)).foregroundColor(.llSub).fixedSize(horizontal: false, vertical: true)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(plan.lines.enumerated()), id: \.offset) { n, line in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Group {
+                            switch line.status {
+                            case .waiting: Text("\(n + 1)").foregroundColor(.llFaint)
+                            case .working: ProgressView().controlSize(.mini)
+                            case .done: Image(systemName: "checkmark").foregroundColor(.llPositive)
+                            case .failed: Image(systemName: "xmark").foregroundColor(.llDanger)
+                            }
+                        }
+                        .font(.system(size: 12, weight: .semibold)).frame(width: 16)
+                        Text(line.label.uppercased()).font(.system(size: 10, weight: .semibold)).tracking(0.6)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Capsule().stroke(Color.llHair))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(line.summary).font(.system(size: 13)).foregroundColor(.llText)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text(([line.model] + (line.uses.map { [$0] } ?? [])).joined(separator: " · "))
+                                .font(.system(size: 11)).foregroundColor(.llFaint)
+                        }
+                    }
+                }
+            }
+            if let note = plan.note, !plan.approved {
+                Text(note).font(.system(size: 12)).foregroundColor(.llSub).fixedSize(horizontal: false, vertical: true)
+            }
+            if !plan.approved {
+                HStack(spacing: 8) {
+                    chip("Make these", primary: true) { model.onPlan?(true) }
+                    chip("Cancel", primary: false) { model.onPlan?(false) }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.llWell))
+    }
+
+    @ViewBuilder
+    private func proposalView(_ p: ProposalCard, onDestination: @escaping (Destination) -> Void) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if !p.summary.isEmpty {
                 Text(p.summary).font(.system(size: 14, weight: .semibold)).foregroundColor(.llText)
@@ -560,7 +642,7 @@ struct CardView: View {
                 Text(ask).font(.system(size: 14, weight: .semibold)).foregroundColor(.llText)
             }
             FlowRow(items: p.destinations) { d in
-                chip(d.label, primary: d == p.destinations.first && p.done == nil) { model.onDestination?(d) }
+                chip(d.label, primary: d == p.destinations.first && p.done == nil) { onDestination(d) }
             }
         }
         .padding(12)

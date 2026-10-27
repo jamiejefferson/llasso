@@ -113,6 +113,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--looktest") {
             Task { @MainActor in await SelfTest.look(); NSApp.terminate(nil) }
         }
+        if CommandLine.arguments.contains("--plantest") {
+            Task { @MainActor in await SelfTest.plan(); NSApp.terminate(nil) }
+        }
         if CommandLine.arguments.contains("--jobtest") {
             Task { @MainActor in await SelfTest.jobs(); NSApp.terminate(nil) }
         }
@@ -953,6 +956,80 @@ enum SelfTest {
         p.arguments = ["-x", "-R", "\(Int(f.minX)),\(Int(top - f.maxY)),\(Int(f.width)),\(Int(f.height))",
                        History.folder.appendingPathComponent(name).path]
         try? p.run(); p.waitUntilExit()
+    }
+
+    /// Plans: the combine step on this Mac, then live requests that do and don't need a plan.
+    /// Writes plantest.json. Costs a few cents: one picture, a few lines of text and speech.
+    static func plan() async {
+        var r: [String: Any] = [:]
+        // Combine: a still picture and a spoken line, then that clip with the line again.
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("llasso-plantest")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let sound = dir.appendingPathComponent("line.m4a")
+        _ = try? Proc.run("/usr/bin/say", ["-o", sound.path, "--data-format=aac", "Llasso joined these on the Mac."])
+        let png = (try? Capture.png(buttonImage())) ?? Data()
+        do {
+            let audio = try Data(contentsOf: sound)
+            let still = try await Combine.still(png, with: audio, soundExt: "m4a")
+            let stillAsset = AVURLAsset(url: { let u = dir.appendingPathComponent("still.mp4"); try? still.write(to: u); return u }())
+            r["combine.still.seconds"] = try await stillAsset.load(.duration).seconds
+            r["combine.still.video"] = try await stillAsset.loadTracks(withMediaType: .video).count
+            r["combine.still.audio"] = try await stillAsset.loadTracks(withMediaType: .audio).count
+            let clip = try await Combine.clip(still, with: audio, soundExt: "m4a")
+            let clipAsset = AVURLAsset(url: { let u = dir.appendingPathComponent("clip.mp4"); try? clip.write(to: u); return u }())
+            r["combine.clip.seconds"] = try await clipAsset.load(.duration).seconds
+            r["combine.clip.audio"] = try await clipAsset.loadTracks(withMediaType: .audio).count
+            r["combine.soundSeconds"] = try await AVURLAsset(url: sound).load(.duration).seconds
+        } catch {
+            r["combine.error"] = error.localizedDescription
+        }
+        guard let screen = NSScreen.main else { return }
+        let f = screen.visibleFrame
+        let ctx = ScreenContext(appName: "Preview", bundleID: "com.apple.Preview", elements: ["AXImage"])
+        func run(_ key: String, _ prompt: String, approve: Bool) async {
+            let job = Controller.shared.startTestJob(box: (CGRect(x: f.minX + 100, y: f.maxY - 300, width: 300, height: 140), screen),
+                                                     context: ctx, prompt: prompt, crop: png)
+            for _ in 0..<240 {
+                if job.card.plan != nil || job.card.proposal != nil || job.card.error != nil || (job.card.state == .done && !job.isRunning) { break }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+            r["\(key).planned"] = job.card.plan != nil
+            r["\(key).proposal"] = job.card.proposal?.summary ?? ""
+            if let plan = job.card.plan {
+                r["\(key).steps"] = plan.lines.map { "\($0.label) · \($0.model) · \($0.summary)\($0.uses.map { " · " + $0 } ?? "")" }
+                r["\(key).note"] = plan.note ?? ""
+                snapshotPanel("plan-ask.png")
+                if approve {
+                    job.card.onPlan?(true)
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    for _ in 0..<480 {
+                        if !job.isRunning && job.card.plan?.lines.contains(where: { $0.status == .working || $0.status == .waiting }) != true { break }
+                        try? await Task.sleep(nanoseconds: 250_000_000)
+                    }
+                    r["\(key).results"] = job.card.results.map { p in
+                        p.summary + " · " + (p.text != nil ? "text" : p.image != nil ? "image" : p.isAudio ? "sound" : p.mediaURL != nil ? "clip" : "?")
+                            + " · " + (p.madeBy ?? "")
+                    }
+                    r["\(key).statuses"] = job.card.plan?.lines.map { "\($0.status)" } ?? []
+                    snapshotPanel("plan-done.png")
+                    if let clip = job.card.results.first(where: { $0.mediaURL != nil && !$0.isAudio })?.mediaURL {
+                        let a = AVURLAsset(url: clip)
+                        r["\(key).clipAudio"] = (try? await a.loadTracks(withMediaType: .audio).count) ?? -1
+                        r["\(key).clipSeconds"] = (try? await a.load(.duration).seconds) ?? -1
+                    }
+                } else {
+                    job.card.onPlan?(false)
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    r["\(key).cancelledClears"] = job.card.plan == nil
+                }
+            }
+            r["\(key).error"] = job.card.error ?? ""
+            job.close()
+        }
+        await run("single", "Write a short caption for this button.", approve: false)
+        await run("cancel", "Write a one-line caption for this button, and separately make a flat illustration of it.", approve: false)
+        await run("joined", "Make a flat illustration of this button and a spoken line describing it in under ten words, joined into one clip.", approve: true)
+        write(r, "plantest.json")
     }
 
     static func jobs() async {

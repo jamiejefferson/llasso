@@ -297,14 +297,19 @@ public struct OpenRouterClient: Sendable {
     }
 
     /// Edit or make an image with an image model through chat completions. Returns the
-    /// first image the model sends back, as encoded bytes (usually PNG).
-    public func image(model: String, prompt: String, source: Data?) async throws -> Data {
-        var parts: [ChatPart] = []
-        if let source { parts.append(.png(source)) }
+    /// first image the model sends back, as encoded bytes (usually PNG). Models that only draw
+    /// refuse a request for text as well, so `makes` carries what the model sends back.
+    public func image(model: String, prompt: String, source: Data?, makes: [String] = []) async throws -> Data {
+        try await image(model: model, prompt: prompt, sources: source.map { [$0] } ?? [], makes: makes)
+    }
+
+    /// The same, starting from several pictures, such as two made earlier to be joined into one.
+    public func image(model: String, prompt: String, sources: [Data], makes: [String] = []) async throws -> Data {
+        var parts: [ChatPart] = sources.map { .png($0) }
         parts.append(.text(prompt))
         var req = try request(path: "chat/completions", body: [
             "model": model,
-            "modalities": ["image", "text"],
+            "modalities": makes.isEmpty || makes.contains("text") ? ["image", "text"] : ["image"],
             "messages": [ChatMessage(role: "user", parts: parts).json],
         ])
         req.timeoutInterval = 180
@@ -358,20 +363,31 @@ public struct OpenRouterClient: Sendable {
         }
     }
 
-    /// Text to speech through /audio/speech. Returns audio bytes (mp3).
+    /// Text to speech through /audio/speech. Returns MP3, or WAV for models that only send raw
+    /// PCM (Gemini's speech models); `Audio.ext(of:)` tells them apart.
     public func speech(model: String, voice: String, text: String) async throws -> Data {
+        do {
+            return try await speech(model: model, voice: voice, text: text, format: "mp3").data
+        } catch OpenRouterError.http(400, let message) where message.lowercased().contains("pcm") {
+            let (pcm, type) = try await speech(model: model, voice: voice, text: text, format: "pcm")
+            return Audio.wav(pcm: pcm, contentType: type)
+        }
+    }
+
+    private func speech(model: String, voice: String, text: String, format: String) async throws -> (data: Data, type: String) {
         let req = try request(path: "audio/speech", body: [
             "model": model,
             "voice": voice,
             "input": text,
-            "response_format": "mp3",
+            "response_format": format,
         ])
         let (data, response) = try await URLSession.shared.data(for: req)
-        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+        let http = response as? HTTPURLResponse
+        if let http, http.statusCode != 200 {
             throw OpenRouterError.http(http.statusCode,
                                        Self.message(fromErrorBody: String(decoding: data, as: UTF8.self)))
         }
-        return data
+        return (data, http?.value(forHTTPHeaderField: "Content-Type") ?? "")
     }
 
     static func message(fromErrorBody body: String) -> String {
@@ -394,5 +410,32 @@ public enum ImageType {
         if b.starts(with: [0x47, 0x49, 0x46, 0x38]) { return "image/gif" }
         if b.count >= 12, b.starts(with: [0x52, 0x49, 0x46, 0x46]), Array(b[8..<12]) == [0x57, 0x45, 0x42, 0x50] { return "image/webp" }
         return "image/png"
+    }
+}
+
+/// Audio bytes: which file type they are, and raw PCM wrapped so players can open it.
+public enum Audio {
+    public static func ext(of data: Data) -> String {
+        data.starts(with: Array("RIFF".utf8)) ? "wav" : data.count > 8 && data[4..<8].elementsEqual("ftyp".utf8) ? "m4a" : "mp3"
+    }
+
+    /// 16-bit little-endian PCM as a WAV file. The rate and channels come from a content type
+    /// such as "audio/pcm;rate=24000;channels=1"; without them, 24 kHz mono.
+    public static func wav(pcm: Data, contentType: String) -> Data {
+        func value(_ key: String) -> Int? {
+            contentType.split(separator: ";").compactMap { part -> Int? in
+                let kv = part.split(separator: "=")
+                return kv.count == 2 && kv[0].trimmingCharacters(in: .whitespaces) == key ? Int(kv[1]) : nil
+            }.first
+        }
+        let rate = UInt32(value("rate") ?? 24_000), channels = UInt16(value("channels") ?? 1), bits: UInt16 = 16
+        var d = Data()
+        func put<T: FixedWidthInteger>(_ v: T) { withUnsafeBytes(of: v.littleEndian) { d.append(contentsOf: $0) } }
+        d.append(contentsOf: Array("RIFF".utf8)); put(UInt32(36 + pcm.count))
+        d.append(contentsOf: Array("WAVEfmt ".utf8)); put(UInt32(16)); put(UInt16(1)); put(channels); put(rate)
+        put(rate * UInt32(channels) * UInt32(bits / 8)); put(channels * bits / 8); put(bits)
+        d.append(contentsOf: Array("data".utf8)); put(UInt32(pcm.count))
+        d.append(pcm)
+        return d
     }
 }

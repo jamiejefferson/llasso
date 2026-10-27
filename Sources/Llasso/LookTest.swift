@@ -78,6 +78,39 @@ extension SelfTest {
             job.show()
             try? await Task.sleep(nanoseconds: 900_000_000)
             await shoot(CGRect(x: v.maxX - 640, y: v.maxY - 560, width: 640, height: 560), "look-\(name)-7c-ask")
+            // A request one result can't answer: the plan waits for a yes, then each result shows.
+            job.card.proposal = nil
+            job.card.title = "Illustrate this and add a spoken line, as one clip"
+            job.card.route = RouteLine(work: "Image", model: "Seedream 5.0 Flash", auto: false, reason: "")
+            job.card.plan = PlanCard(summary: "An illustration of the van with a spoken line, joined into one clip.", lines: [
+                .init(id: "1", label: "Image", model: "Seedream 5.0 Flash", summary: "Flat illustration of the van"),
+                .init(id: "2", label: "Speech", model: "Gemini 3.8 Flash TTS", summary: "A spoken line, under ten words"),
+                .init(id: "3", label: "Combine", model: "On this Mac", summary: "Join the picture and the voice into one clip", uses: "uses 1 and 2"),
+            ])
+            job.show()
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            await shoot(CGRect(x: v.maxX - 640, y: v.maxY - 560, width: 640, height: 560), "look-\(name)-7d-plan")
+            job.card.plan?.approved = true
+            job.card.plan?.lines[0].status = .done
+            job.card.plan?.lines[1].status = .done
+            job.card.plan?.lines[2].status = .working
+            job.card.working = "Joining the parts on this Mac…"
+            job.card.state = .thinking
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            await shoot(CGRect(x: v.maxX - 640, y: v.maxY - 560, width: 640, height: 560), "look-\(name)-7e-plan-running")
+            job.card.working = nil
+            job.card.state = .done
+            job.card.plan?.lines[2].status = .done
+            var caption = ProposalCard(summary: "One-line caption", destinations: [.replaceInPlace(app: "Notes"), .copy, .newDocument, .saveAs])
+            caption.text = "The little grey van that brought the whole street its post."
+            caption.madeBy = "Made with Claude Haiku 5.5. Your choice for writing."
+            caption.ask = "Replace the boxed text in Notes with this?"
+            var made = ProposalCard(summary: "Join the picture and the voice into one clip", destinations: [.saveAs, .copy])
+            made.mediaURL = FileManager.default.fileExists(atPath: clip.path) ? clip : nil
+            made.madeBy = "Joined on this Mac from step 1 by Seedream 5.0 Flash and step 2 by Gemini 3.8 Flash TTS."
+            job.card.results = [caption, made]
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            await shoot(CGRect(x: v.maxX - 640, y: v.maxY - 1100, width: 640, height: 1100), "look-\(name)-7f-plan-results")
             job.close()
             backdrop.orderOut(nil)
 
