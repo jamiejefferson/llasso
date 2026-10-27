@@ -114,6 +114,24 @@ extension SelfTest {
             job.close()
             backdrop.orderOut(nil)
 
+            // A newer Llasso: one line at the top of the request list, then the same line after a failed update.
+            let release = Updater.Release(version: "0.1.5", note: "Llasso now tells you when a new version is out and updates itself in one click.",
+                                          zip: URL(string: "https://example.com/llasso.zip")!)
+            for (state, label) in [(Updater.State.idle, "ready"), (.failed("The download was refused."), "failed")] {
+                Updater.shared.showForTest(release, state: state)
+                let w = NSWindow(contentRect: CGRect(x: v.maxX - 440, y: v.maxY - 360, width: 400, height: 320),
+                                 styleMask: [.borderless], backing: .buffered, defer: false)
+                w.isReleasedWhenClosed = false
+                w.contentView = NSHostingView(rootView: TasksView(model: TasksModel.shared, onShow: { _ in }, onDraw: {}, onClear: {},
+                                                                  onFeedback: {}, onSettings: {}, onQuit: {})
+                    .background(Color(nsColor: .windowBackgroundColor)))
+                w.orderFrontRegardless()
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                await shoot(w.frame, "look-\(name)-10-update-\(label)")
+                w.orderOut(nil)
+            }
+            Updater.shared.showForTest(nil)
+
             // Settings, first run, with a key saved, and after a paste OpenRouter refused: the key
             // field should read as a place to paste, and a refusal should say why.
             for (state, noKey, problem) in [("nokey", true, nil), ("saved", false, nil),

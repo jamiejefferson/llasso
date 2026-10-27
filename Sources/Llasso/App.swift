@@ -45,13 +45,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusTimer: Timer?
     private var menu: NSMenu?
     private var popover: NSPopover?
+    private let updateItem = NSMenuItem(title: "", action: #selector(updateClicked), keyEquivalent: "")
+    private let updateSeparator = NSMenuItem.separator()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installEditMenu()
         ModelStore.shared.refresh()
+        if !CommandLine.arguments.contains(where: { $0.hasPrefix("--") && $0.hasSuffix("test") }) { Updater.shared.start() }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage.llassoMark()
         let menu = NSMenu()
+        // Shown only when a newer Llasso is out.
+        updateItem.target = self
+        updateItem.isHidden = true
+        menu.addItem(updateItem)
+        updateSeparator.isHidden = true
+        menu.addItem(updateSeparator)
         menu.addItem(withTitle: "Draw a box   ⌃⌥S", action: #selector(draw), keyEquivalent: "").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Send feedback…", action: #selector(feedback), keyEquivalent: "").target = self
@@ -112,6 +121,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if CommandLine.arguments.contains("--looktest") {
             Task { @MainActor in await SelfTest.look(); NSApp.terminate(nil) }
+        }
+        if CommandLine.arguments.contains("--updatetest") {
+            // Run from an older copy: finds the latest release, writes what it found, then updates.
+            Task { @MainActor in
+                await Updater.shared.refresh()
+                let u = Updater.shared
+                SelfTest.write(["running": Updater.current, "available": u.available?.version ?? "",
+                                "note": u.available?.note ?? "", "zip": u.available?.zip.absoluteString ?? "",
+                                "path": Bundle.main.bundlePath], "updatetest.json")
+                if u.available != nil { u.update() } else { NSApp.terminate(nil) }
+                for _ in 0..<240 {
+                    if case .failed(let why) = u.state {
+                        SelfTest.write(["failed": why], "updatetest-failed.json"); NSApp.terminate(nil)
+                    }
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                }
+            }
         }
         if CommandLine.arguments.contains("--plantest") {
             Task { @MainActor in await SelfTest.plan(); NSApp.terminate(nil) }
@@ -181,6 +207,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusItem?.button?.title = title
         }
         statusItem?.button?.contentTintColor = waiting > 0 ? Palette.alert : nil
+        let line = Updater.shared.line
+        updateItem.isHidden = line == nil
+        updateSeparator.isHidden = line == nil
+        if let line, updateItem.title != line { updateItem.title = line }
     }
 
     @objc private func statusClicked(_ sender: NSStatusBarButton) {
@@ -193,6 +223,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         MainActor.assumeIsolated { toggleTasks(from: sender) }
+    }
+
+    @MainActor @objc func updateClicked() {
+        let u = Updater.shared
+        if case .failed = u.state { u.copyInstallCommand() } else { u.update() }
     }
 
     @MainActor func toggleTasks() {
@@ -346,6 +381,33 @@ final class SettingsForm: ObservableObject {
     }
 }
 
+/// Whether Llasso looks for new versions, and which one this is.
+struct UpdatesSection: View {
+    @ObservedObject private var updater = Updater.shared
+
+    var body: some View {
+        Section("Updates") {
+            Toggle("Check for updates", isOn: $updater.enabled)
+            HStack {
+                Text(status).font(.callout).foregroundColor(.secondary)
+                Spacer()
+                if updater.available != nil && updater.state == .idle {
+                    Button("Update") { updater.update() }
+                } else {
+                    Button("Check now") { updater.check() }.disabled(!updater.enabled)
+                }
+            }
+        }
+    }
+
+    private var status: String {
+        let version = "This is Llasso \(Updater.current)."
+        if let release = updater.available { return version + " \(release.version) is out." }
+        guard let checked = updater.lastChecked else { return version }
+        return version + " Up to date, checked at \(checked.formatted(date: .omitted, time: .shortened))."
+    }
+}
+
 struct SettingsView: View {
     @ObservedObject private var settings = Settings.shared
     @ObservedObject private var form = SettingsForm()
@@ -462,6 +524,7 @@ struct SettingsView: View {
                 Text("Hold ⌘ and drag a box round anything. The prompt opens when you let go: type and press Return, or hold the mic and talk. Where ⌘-drag doesn't reach, press ⌃⌥S or choose Draw a box from the menu bar. Esc closes the prompt.")
                     .font(.callout)
             }
+            UpdatesSection()
         }
         .formStyle(.grouped)
         .frame(width: 540, height: 780)
@@ -1341,7 +1404,7 @@ enum SelfTest {
         }
     }
 
-    private static func write(_ report: [String: Any], _ name: String = "selftest.json") {
+    static func write(_ report: [String: Any], _ name: String = "selftest.json") {
         try? FileManager.default.createDirectory(at: History.folder, withIntermediateDirectories: true)
         if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: History.folder.appendingPathComponent(name))

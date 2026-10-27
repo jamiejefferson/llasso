@@ -68,6 +68,7 @@ final class TasksModel: ObservableObject {
 
 struct TasksView: View {
     @ObservedObject var model: TasksModel
+    @ObservedObject var updater = Updater.shared
     var onShow: (Job) -> Void
     var onDraw: () -> Void
     var onClear: () -> Void
@@ -85,6 +86,7 @@ struct TasksView: View {
             }
             .padding(.horizontal, 16).padding(.vertical, 12)
             Divider()
+            if let line = updater.line { updateRow(line) }
             if model.jobs.isEmpty && model.earlier.isEmpty {
                 Text("Nothing yet. Draw a box round anything and ask.")
                     .font(.system(size: 13)).foregroundColor(.secondary)
@@ -122,6 +124,38 @@ struct TasksView: View {
             .padding(.horizontal, 16).padding(.vertical, 10)
         }
         .frame(width: 400)
+    }
+
+    /// A newer Llasso: one quiet line with what changed, and a button.
+    private func updateRow(_ line: String) -> some View {
+        let failed: Bool = { if case .failed = updater.state { return true }; return false }()
+        let busy = updater.state != .idle && !failed
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(failed ? "Llasso couldn't update itself" : busy ? line : "Llasso \(updater.available?.version ?? "") is out")
+                        .font(.system(size: 13, weight: .medium)).foregroundColor(.primary)
+                    if case .failed(let why) = updater.state {
+                        Text(why + " Paste the install command into Terminal instead.")
+                            .font(.system(size: 12)).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+                    } else if !busy, let note = updater.available?.note {
+                        Text(note).font(.system(size: 12)).foregroundColor(.secondary)
+                            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 8)
+                if busy {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button(failed ? "Copy command" : "Update") {
+                        if failed { updater.copyInstallCommand() } else { updater.update() }
+                    }
+                    .controlSize(.small)
+                }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 10)
+            Divider()
+        }
     }
 }
 

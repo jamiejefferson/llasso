@@ -12,6 +12,9 @@ if gh release view "$TAG" >/dev/null 2>&1; then
     echo "Release $TAG exists already. Raise CFBundleShortVersionString in Resources/Info.plist." >&2
     exit 1
 fi
+# The first line of the notes is what Llasso's update line shows people: one plain sentence.
+NOTE="${LLASSO_NOTE:-}"
+[ -n "$NOTE" ] || { echo "Set LLASSO_NOTE to one plain sentence on what changed, for the update line in the app." >&2; exit 1; }
 [ -z "$(git status --porcelain -- Sources Resources Package.swift)" ] || { echo "Commit the source changes first." >&2; exit 1; }
 
 ./build.sh release
@@ -22,7 +25,9 @@ echo "▸ $ZIP ($(du -h "$ZIP" | cut -f 1))"
 
 git push -q
 gh release create "$TAG" "$ZIP" --title "Llasso $VERSION" --target "$(git rev-parse HEAD)" \
-    --notes "Install or update:
+    --notes "$NOTE
+
+Install or update:
 
     curl -fsSL https://raw.githubusercontent.com/jamiejefferson/llasso/main/install.sh | sh
 
