@@ -22,6 +22,23 @@ struct Capture {
 
     /// Capture one display, leaving out Llasso's own windows (overlay, pill, card).
     static func take(screen: NSScreen, selection: CGRect) async throws -> Capture {
+        let (image, cropRect) = try await shot(screen: screen, selection: selection)
+        guard let cropped = image.cropping(to: cropRect) else { throw CaptureError.encode }
+
+        let cropPNG = try png(resized(cropped, maxEdge: 2000, outline: nil))
+        let screenPNG = try png(resized(image, maxEdge: 1400, outline: cropRect))
+        return Capture(crop: cropPNG, screen: screenPNG)
+    }
+
+    /// The display as it is now, scaled down with the box outlined, like a capture's `screen`,
+    /// so a later look can be set beside the first one.
+    static func overview(screen: NSScreen, selection: CGRect) async throws -> Data {
+        let (image, cropRect) = try await shot(screen: screen, selection: selection)
+        return try png(resized(image, maxEdge: 1400, outline: cropRect))
+    }
+
+    /// The whole display at full resolution, and where the box falls in it in pixels.
+    private static func shot(screen: NSScreen, selection: CGRect) async throws -> (CGImage, CGRect) {
         guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
         else { throw CaptureError.noDisplay }
         let displayID = CGDirectDisplayID(number.uint32Value)
@@ -41,12 +58,7 @@ struct Capture {
 
         let imageSize = CGSize(width: image.width, height: image.height)
         let local = selection.offsetBy(dx: -screen.frame.minX, dy: -screen.frame.minY)
-        let cropRect = Geometry.pixelCrop(selection: local, screenSize: screen.frame.size, imageSize: imageSize)
-        guard let cropped = image.cropping(to: cropRect) else { throw CaptureError.encode }
-
-        let cropPNG = try png(resized(cropped, maxEdge: 2000, outline: nil))
-        let screenPNG = try png(resized(image, maxEdge: 1400, outline: cropRect))
-        return Capture(crop: cropPNG, screen: screenPNG)
+        return (image, Geometry.pixelCrop(selection: local, screenSize: screen.frame.size, imageSize: imageSize))
     }
 
     /// Scale an image to fit `maxEdge`, optionally drawing an amber outline round
@@ -126,6 +138,7 @@ enum ContextReader {
             ctx.canReplaceText = true
         }
         if let sheetApp = Sheets.app(for: app.bundleIdentifier) { ctx.sheet = Sheets.read(sheetApp) }
+        if app.bundleIdentifier == PhotoshopApp.bundleID { ctx.photoshop = PhotoshopApp.read(box: selection) }
 
         // Sample a 5 x 5 grid of points inside the box and describe what sits there.
         let mainHeight = NSScreen.screens.first?.frame.height ?? 0
@@ -247,32 +260,30 @@ enum ContextReader {
         return role == "AXTextArea" || role == "AXTextField"
     }
 
-    /// Whether the element's frame overlaps the box (AppKit global coordinates).
-    static func frameIntersects(_ el: AXUIElement, _ box: CGRect) -> Bool {
+    /// The element's frame in top-left global coordinates, as Accessibility gives it.
+    static func frame(_ el: AXUIElement) -> CGRect? {
         var posRef: CFTypeRef?, sizeRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(el, kAXPositionAttribute as CFString, &posRef) == .success,
               AXUIElementCopyAttributeValue(el, kAXSizeAttribute as CFString, &sizeRef) == .success,
-              let posRef, let sizeRef else { return true }
+              let posRef, let sizeRef else { return nil }
         var pos = CGPoint.zero, size = CGSize.zero
         AXValueGetValue(posRef as! AXValue, .cgPoint, &pos)
         AXValueGetValue(sizeRef as! AXValue, .cgSize, &size)
+        return CGRect(origin: pos, size: size)
+    }
+
+    /// Whether the element's frame overlaps the box (AppKit global coordinates).
+    static func frameIntersects(_ el: AXUIElement, _ box: CGRect) -> Bool {
+        guard let f = frame(el) else { return true }
         let mainHeight = NSScreen.screens.first?.frame.height ?? 0
-        let topLeftBox = Geometry.topLeftGlobal(box, mainScreenHeight: mainHeight)
-        return CGRect(origin: pos, size: size).intersects(topLeftBox)
+        return f.intersects(Geometry.topLeftGlobal(box, mainScreenHeight: mainHeight))
     }
 
     /// Whether the element sits wholly inside the box (AppKit global coordinates).
     static func frameInside(_ el: AXUIElement, _ box: CGRect) -> Bool {
-        var posRef: CFTypeRef?, sizeRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(el, kAXPositionAttribute as CFString, &posRef) == .success,
-              AXUIElementCopyAttributeValue(el, kAXSizeAttribute as CFString, &sizeRef) == .success,
-              let posRef, let sizeRef else { return false }
-        var pos = CGPoint.zero, size = CGSize.zero
-        AXValueGetValue(posRef as! AXValue, .cgPoint, &pos)
-        AXValueGetValue(sizeRef as! AXValue, .cgSize, &size)
+        guard let f = frame(el) else { return false }
         let mainHeight = NSScreen.screens.first?.frame.height ?? 0
-        return Geometry.topLeftGlobal(box, mainScreenHeight: mainHeight).insetBy(dx: -8, dy: -8)
-            .contains(CGRect(origin: pos, size: size))
+        return Geometry.topLeftGlobal(box, mainScreenHeight: mainHeight).insetBy(dx: -8, dy: -8).contains(f)
     }
 
     /// "AXButton 'Save'" style line, or nil for anonymous containers.

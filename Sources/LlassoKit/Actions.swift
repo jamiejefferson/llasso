@@ -21,6 +21,7 @@ public enum ContentKind: String, Sendable {
         let bundle = c.bundleID ?? ""
         if c.sheet != nil || spreadsheetBundles.contains(bundle)
             || (c.url ?? "").contains("docs.google.com/spreadsheets") { return .spreadsheet }
+        if c.photoshop != nil { return .image }
         if c.integration != nil || designBundles.contains(bundle) { return c.url != nil ? .webPage : .design }
         if let path = c.documentPath, imageExtensions.contains((path as NSString).pathExtension.lowercased()) { return .image }
         let roles = Set(c.roles)
@@ -80,6 +81,7 @@ public enum BuiltinTool: String, CaseIterable, Sendable {
     case makeVideo = "make_video"
     case makeSound = "make_sound"
     case makePlan = "make_plan"
+    case look = "look"
 
     public static func named(_ name: String) -> BuiltinTool? { BuiltinTool(rawValue: name) }
 
@@ -108,8 +110,17 @@ public enum BuiltinTool: String, CaseIterable, Sendable {
             return fn("Show the user where something is by ringing a point inside the boxed image. Use it to guide them through an app.",
                       ["x": ["type": "number", "description": "0 to 1, left to right across the boxed image"],
                        "y": ["type": "number", "description": "0 to 1, top to bottom down the boxed image"],
-                       "label": ["type": "string", "description": "A few words shown beside the ring"]],
+                       "label": ["type": "string", "description": "A few words shown beside the ring"],
+                       "target": ["type": "string", "description": "What to ring, described so it can be told apart from its neighbours, e.g. \"the Export button at the right of the toolbar\". Llasso uses it to place the ring exactly."]],
                       ["x", "y", "label"])
+        case .look:
+            return fn("Look at the user's screen as it is now and answer one closed question in under a second, with a fast vision model. Use it to check that a change shows, whether something has appeared or gone, or which option is selected, instead of taking a screenshot. It reads the whole screen with the user's box outlined in amber, so it can't read small print; take a screenshot when you need detail.",
+                      ["question": ["type": "string", "description": "One question about the screen, e.g. \"Does the heading in the box now read Overview?\""],
+                       "kind": ["type": "string", "enum": ["yes_no", "choice", "changed"],
+                                "description": "yes_no answers how likely yes is. choice picks one of options. changed compares the screen now with the screen when the box was drawn; the question says what should have changed."],
+                       "options": ["type": "array", "items": ["type": "string"], "minItems": 2, "maxItems": 8,
+                                   "description": "The answers to pick from, for choice."]],
+                      ["question", "kind"])
         case .proposeText:
             return fn("Propose new or rewritten text. Llasso shows it and lets the user put it back in place, copy it, or open it in a new document. Give the complete replacement text, not a diff.",
                       ["text": ["type": "string"], "summary": summary], ["text", "summary"])
@@ -189,7 +200,7 @@ public enum BuiltinTool: String, CaseIterable, Sendable {
         case .makeSound:
             guard let p = a["prompt"] as? String else { return nil }
             return .sound(prompt: p, type: (a["type"] as? String) == "speech" ? .speech : .music, summary: summary)
-        case .askUser, .pointAt, .editCode, .makePlan:
+        case .askUser, .pointAt, .editCode, .makePlan, .look:
             return nil
         }
     }

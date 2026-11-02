@@ -19,6 +19,16 @@ enum Destination: Hashable {
     case undoText(app: String)
     case replaceImage(name: String)
     case undoImage(name: String)
+    case addLayer(app: String)
+    case undoLayer(document: Int, layer: Int)
+
+    /// The destination changes what the app shows, so Llasso can look for the change afterwards.
+    var changesScreen: Bool {
+        switch self {
+        case .replaceInPlace, .pasteInto, .writeCells, .run, .addLayer: return true
+        default: return false
+        }
+    }
 
     var label: String {
         switch self {
@@ -36,6 +46,8 @@ enum Destination: Hashable {
         case .undoText: return "Undo"
         case .replaceImage(let name): return "Replace \(name)"
         case .undoImage: return "Undo"
+        case .addLayer(let app): return "Add as a layer in \(app)"
+        case .undoLayer: return "Undo"
         }
     }
 }
@@ -52,6 +64,8 @@ enum ActionError: Error, LocalizedError {
 enum Actuator {
     /// Originals of image files Llasso replaced, by path, for Undo.
     static var imageBackups: [String: URL] = [:]
+    /// The layer the last Add as a layer made, so its card can offer Undo.
+    static var lastLayer: (document: Int, layer: Int)?
 
     /// Folder for saved results when no project resolved.
     static var outputFolder: URL {
@@ -67,6 +81,8 @@ enum Actuator {
             d += [.copy, .newDocument, .saveAs]
             return d
         case .image:
+            // In Photoshop the picture goes back as a layer over the area it was made from.
+            if c.photoshop != nil { return [.addLayer(app: app), .saveAs, .copy] }
             // Save, copy, then replace the source when the box came from an image file.
             var d: [Destination] = [.saveAs, .copy]
             if let path = c.documentPath, ContentKind.imageExtensions.contains((path as NSString).pathExtension.lowercased()) {
@@ -320,8 +336,17 @@ enum Actuator {
     /// `fit` is the boxed area's pixel size: an image going back into an app is scaled to it,
     /// because image models answer at their own size (often 1024 square).
     static func image(_ png: Data, to d: Destination, context c: ScreenContext, app: NSRunningApplication?,
-                      fit: CGSize?, points: CGSize?) async throws -> String {
+                      fit: CGSize?, points: CGSize?, summary: String = "") async throws -> String {
         switch d {
+        case .addLayer(let name):
+            guard let ps = c.photoshop else { throw ActionError.failed("Llasso lost track of the Photoshop document.") }
+            let layer = try await PhotoshopApp.place(png, state: ps, name: PhotoshopApp.layerName(summary))
+            lastLayer = (ps.documentID, layer)
+            return "Added a layer over \(ps.regionSource) in \(name). Undo, or Edit › Undo in \(name), takes it out."
+        case .undoLayer(let document, let layer):
+            try await PhotoshopApp.remove(layer: layer, document: document, name: PhotoshopApp.layerName("remove layer"))
+            return "Took the layer out."
+
         case .replaceFile:
             // The box may cover only part of the file, so the edit never overwrites it.
             guard let path = c.documentPath else { throw ActionError.failed("Llasso lost track of the file.") }
@@ -696,7 +721,8 @@ enum Shell {
 enum Pointer {
     private static var panels: [NSPanel] = []
 
-    static func ring(at point: CGPoint, label: String, seconds: Double = 6) {
+    @discardableResult
+    static func ring(at point: CGPoint, label: String, seconds: Double = 6) -> NSPanel {
         let size = CGSize(width: 64, height: 64)
         let ring = NSPanel(contentRect: CGRect(origin: .zero, size: CGSize(width: 320, height: size.height)),
                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -716,6 +742,13 @@ enum Pointer {
             ring.orderOut(nil)
             panels.removeAll { $0 === ring }
         }
+        return ring
+    }
+
+    /// Move a ring that is still showing, such as when a closer look placed it better.
+    static func move(_ ring: NSPanel, to point: CGPoint) {
+        guard panels.contains(where: { $0 === ring }) else { return }
+        ring.setFrameOrigin(CGPoint(x: point.x - 32, y: point.y - 32))
     }
 
     static func clear() {

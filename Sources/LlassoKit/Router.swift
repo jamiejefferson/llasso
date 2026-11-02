@@ -208,6 +208,21 @@ public enum Jev {
     public static let path = "https://openrouter.ai/api/alpha/decisions"
     public static let model = "~typesafe/jev-latest"
     public static let timeout: TimeInterval = 1.5
+    /// The first Jev that reads pictures and answers Box questions.
+    public static let visionModel = "typesafe/jev-1.14"
+
+    /// A picture for a decision's state.
+    public static func image(_ png: Data) -> [String: Any] {
+        ["type": "image_url", "image_url": ["url": "data:\(ImageType.mime(of: png));base64,\(png.base64EncodedString())"]]
+    }
+
+    /// A Box answer as a rectangle in fractions of the picture, top-left origin.
+    public static func box(_ answer: Any?) -> CGRect? {
+        guard let b = (answer as? [String: Any])?["box"] as? [String: Any],
+              let l = b["left"] as? Double, let t = b["top"] as? Double,
+              let r = b["right"] as? Double, let bo = b["bottom"] as? Double else { return nil }
+        return CGRect(x: l, y: t, width: r - l, height: bo - t)
+    }
 
     static let difficulty: [Difficulty: String] = [
         .simple: "One step. A short answer, a small edit or a single change.",

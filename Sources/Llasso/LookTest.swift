@@ -185,6 +185,26 @@ extension SelfTest {
                 }
                 w.orderOut(nil)
             }
+            // The keys for dragging a box, as they ship and changed to ⌥⇧.
+            let chosen = Settings.shared.dragKeys
+            for (label, keys) in [("command", DragKeys.standard), ("changed", [.option, .shift])] {
+                Settings.shared.dragKeys = keys
+                let w = NSWindow(contentRect: CGRect(x: v.midX - 270, y: v.maxY - 820, width: 540, height: 780),
+                                 styleMask: [.titled, .closable], backing: .buffered, defer: false)
+                w.title = "Llasso Settings"
+                w.isReleasedWhenClosed = false
+                w.contentView = NSHostingView(rootView: SettingsView())
+                w.orderFrontRegardless()
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                if let scroll = Self.firstScrollView(in: w.contentView), let doc = scroll.documentView {
+                    scroll.contentView.scroll(to: CGPoint(x: 0, y: max(0, doc.bounds.height - scroll.contentView.bounds.height)))
+                    scroll.reflectScrolledClipView(scroll.contentView)
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                }
+                await shoot(w.frame, "look-\(name)-8c-settings-keys-\(label)")
+                w.orderOut(nil)
+            }
+            Settings.shared.dragKeys = chosen
 
             // The model picker, for a chat model and an image model.
             for _ in 0..<60 where ModelStore.shared.loading || ModelStore.shared.lists.isEmpty {

@@ -17,6 +17,8 @@ final class ModelStore: ObservableObject {
     @Published var lean: Lean { didSet { defaults.set(lean.rawValue, forKey: "routerLean") } }
     /// Ask Jev what each request is for; the keyword rules answer when it is off or slow.
     @Published var useJev: Bool { didSet { defaults.set(useJev, forKey: "routerJev") } }
+    /// Let Jev look at screenshots: checking a change landed, finding what to ring, quick looks.
+    @Published var useJevLooks: Bool { didSet { defaults.set(useJevLooks, forKey: "jevLooks") } }
 
     /// Used when the lists haven't loaded and nothing is chosen.
     static let fallback: [ModelKind: String] = [
@@ -32,6 +34,7 @@ final class ModelStore: ObservableObject {
     private init() {
         lean = Lean(rawValue: defaults.string(forKey: "routerLean") ?? "") ?? .balanced
         useJev = defaults.object(forKey: "routerJev") as? Bool ?? true
+        useJevLooks = defaults.object(forKey: "jevLooks") as? Bool ?? true
         if let data = defaults.data(forKey: "categories"), let saved = try? JSONDecoder().decode([WorkCategory].self, from: data) {
             categories = WorkCategory.merged(saved)
         }

@@ -23,6 +23,8 @@ final class Settings: ObservableObject {
     @Published var voiceOut: VoiceOut { didSet { defaults.set(voiceOut.rawValue, forKey: "voiceOut") } }
     @Published var ttsVoice: String { didSet { defaults.set(ttsVoice, forKey: "ttsVoice") } }
     @Published private(set) var hasKey = false
+    /// The keys held while dragging to draw a box.
+    @Published var dragKeys: DragKeys { didSet { defaults.set(dragKeys.rawValue, forKey: "dragKeys") } }
 
     /// The chat model for work that isn't a person's request (self-tests, rewriting copied
     /// formatting): whatever the router would use for a moderate piece of writing.
@@ -34,6 +36,8 @@ final class Settings: ObservableObject {
     private init() {
         voiceOut = VoiceOut(rawValue: defaults.string(forKey: "voiceOut") ?? "") ?? .system
         ttsVoice = defaults.string(forKey: "ttsVoice") ?? ""
+        let keys = DragKeys(rawValue: defaults.integer(forKey: "dragKeys"))
+        dragKeys = keys.isUsable ? keys : .standard
         hasKey = !apiKey.isEmpty
     }
 

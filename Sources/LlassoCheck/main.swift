@@ -239,6 +239,15 @@ check("jev reply reads", jevReading?.work == .design && jevReading?.difficulty =
       && abs((jevReading?.confidence ?? 0) - 0.88 * 0.95) < 0.001)
 check("jev reply with unknown work is ignored", Jev.reading(from: Data(#"{"answers":{"work":{"choice":"poetry"}}}"#.utf8)) == nil)
 
+// Jev reading pictures: a Box answer as a rectangle, and the look tool on offer.
+let jevBox = Jev.box(["type": "box", "box": ["top": 0.4, "bottom": 0.48, "left": 0.81, "right": 0.94], "confidence": 0.3])
+check("jev box reads as a rect", jevBox.map { abs($0.minX - 0.81) < 1e-9 && abs($0.maxY - 0.48) < 1e-9 } == true)
+check("jev box missing edges is nil", Jev.box(["box": ["top": 0.4]]) == nil)
+check("jev picture is a data url", ((Jev.image(Data([0x89, 0x50, 0x4E, 0x47]))["image_url"] as? [String: String])?["url"] ?? "").hasPrefix("data:image/png;base64,"))
+let lookFn = BuiltinTool.look.schema["function"] as? [String: Any]
+check("look asks a question of a kind", ((lookFn?["parameters"] as? [String: Any])?["required"] as? [String]) == ["question", "kind"])
+check("look is never a proposal", BuiltinTool.look.proposal(["question": "x"]) == nil)
+
 // Router: catalogue and prices.
 let chatList = #"{"data":[{"id":"anthropic/claude-sonnet-5.5","name":"Anthropic: Claude Sonnet 5.5","created":1790000000,"context_length":1000000,"architecture":{"input_modalities":["text","image"],"output_modalities":["text"]},"pricing":{"prompt":"0.000003","completion":"0.000015"},"supported_parameters":["tools","reasoning"]},{"id":"google/gemini-3.5-flash-lite","name":"Google: Gemini 3.5 Flash Lite","architecture":{"input_modalities":["text","image"],"output_modalities":["text"]},"pricing":{"prompt":"0.0000001","completion":"0.0000004"},"supported_parameters":["tools"]},{"id":"some/text-only","architecture":{"input_modalities":["text"],"output_modalities":["text"]},"pricing":{"prompt":"0","completion":"0"},"supported_parameters":["tools"]},{"id":"openrouter/auto","architecture":{"input_modalities":["text","image"],"output_modalities":["text"]},"pricing":{"prompt":"-1","completion":"-1"},"supported_parameters":["tools"]}]}"#
 let chats = Catalogue.parse(Data(chatList.utf8), kind: .chat)
@@ -394,6 +403,39 @@ Task {
 keySem.wait()
 check("non-key refused", notAKey?.contains("sk-or-") == true)
 check("unknown key refused by OpenRouter", unknownKey?.contains("recognise") == true)
+
+// Photoshop: the read script's lines, the box mapped into the document, and the brief.
+let psOut = "id=1043\nname=Harbour.psd\nw=4000\nh=3000\nlayer=Background\nsel=1200,800,2200,1500\nview=100,200,1100,950"
+let ps = PhotoshopState.parse(psOut, box: CGRect(x: 350, y: 387.5, width: 250, height: 125))
+check("photoshop state parsed", ps?.documentID == 1043 && ps?.size == CGSize(width: 4000, height: 3000) && ps?.layer == "Background")
+check("photoshop selection parsed", ps?.selection == CGRect(x: 1200, y: 800, width: 1000, height: 700))
+check("photoshop box mapped to pixels", ps?.boxed == CGRect(x: 1000, y: 750, width: 1000, height: 500))
+check("selection wins over the box", ps?.region == ps?.selection && ps?.regionSource == "the selection")
+check("box off the picture maps to nothing",
+      PhotoshopState.map(CGRect(x: 0, y: 0, width: 50, height: 50), view: CGRect(x: 100, y: 200, width: 1000, height: 750),
+                         size: CGSize(width: 4000, height: 3000)) == nil)
+let noSel = PhotoshopState.parse("id=1\nname=a.psd\nw=800\nh=600\nlayer=L\nviewError=no view")
+check("no selection or view: whole picture", noSel?.region == CGRect(x: 0, y: 0, width: 800, height: 600) && noSel?.boxed == nil)
+check("no document: nothing", PhotoshopState.parse("none") == nil)
+var psCtx = ScreenContext(appName: "Adobe Photoshop 2026", bundleID: "com.adobe.Photoshop")
+psCtx.photoshop = ps
+check("photoshop box is an image", psCtx.kind == .image)
+check("photoshop tag names the selection", psCtx.tag == "Adobe Photoshop 2026 · Harbour.psd · your selection")
+let psBrief = Brief.userText(prompt: "make the sky stormy", verb: nil, context: psCtx)
+check("brief names the selection", psBrief.contains("1200,800 to 2200,1500 px (1000 × 700)") && psBrief.contains("Harbour.psd"))
+check("js literal escapes", PhotoshopScript.literal("a\"b\\c\nd") == "\"a\\\"b\\\\c\\nd\"")
+check("adjustment script clamps", (try? PhotoshopScript.tool(.adjust, args: ["kind": "brightness_contrast", "brightness": 900, "summary": "Brighter"],
+                                                              document: 1, box: nil, name: "Llasso: Brighter"))?.contains("putInteger(stringIDToTypeID(\"brightness\"), 150)") == true)
+check("unknown selection refused", (try? PhotoshopScript.tool(.select, args: ["what": "lasso"], document: 1, box: nil, name: "x")) == nil)
+check("box selection needs the box", (try? PhotoshopScript.tool(.select, args: ["what": "box"], document: 1, box: nil, name: "x")) == nil)
+
+// Keys held to drag a box.
+check("drag keys default to command", DragKeys.standard == .command && DragKeys.standard.symbols == "⌘")
+check("drag keys read from flags", DragKeys(flags: [.maskAlternate, .maskShift, .maskAlphaShift]) == [.option, .shift])
+check("drag keys match exactly", DragKeys.command.matches(.maskCommand) && !DragKeys.command.matches([.maskCommand, .maskShift]))
+check("caps lock doesn't stop a match", DragKeys.command.matches([.maskCommand, .maskAlphaShift]))
+check("drag keys written in macOS order", ([.command, .shift, .control] as DragKeys).symbols == "⌃⇧⌘")
+check("shift alone isn't usable", !DragKeys.shift.isUsable && !DragKeys().isUsable && ([.shift, .option] as DragKeys).isUsable)
 
 print(failures == 0 ? "All checks passed." : "\(failures) check(s) failed.")
 exit(Int32(failures))

@@ -40,7 +40,7 @@ final class HotKey {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var hotKey: HotKey?
-    private let watcher = CommandDrag()
+    private let watcher = BoxDrag()
     private var gestureRetry: Timer?
     private var statusTimer: Timer?
     private var menu: NSMenu?
@@ -84,13 +84,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { Controller.shared.toggle() }
         }
 
-        // Hold ⌘ and drag to draw a box; the prompt opens when you let go.
+        // Hold the keys chosen in Settings and drag to draw a box; the prompt opens when you let go.
         watcher.onStart = { p in MainActor.assumeIsolated { Controller.shared.beginDrag(at: p) } }
         watcher.onMove = { p in MainActor.assumeIsolated { Controller.shared.drag(to: p) } }
         watcher.onEnd = { MainActor.assumeIsolated { Controller.shared.endDrag() } }
         // A test run started from a terminal is charged to the terminal's permissions, not
         // Llasso's, so it can look ungranted; it must not open Settings or start the drag watcher.
-        // The draw test needs the ⌘-drag watcher, so it counts as a normal run here.
+        // The draw test needs the drag watcher, so it counts as a normal run here.
         let testRun = CommandLine.arguments.contains { $0.hasPrefix("--") && $0.hasSuffix("test") && $0 != "--drawtest" }
         // The tap needs Accessibility; keep trying until it is granted.
         if !testRun, !watcher.start() {
@@ -235,6 +235,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--hatchtest") {
             Task { @MainActor in await SelfTest.hatch(); NSApp.terminate(nil) }
         }
+        if CommandLine.arguments.contains("--checktest") {
+            Task { @MainActor in await SelfTest.check(); NSApp.terminate(nil) }
+        }
+        if CommandLine.arguments.contains("--jevlooktest") {
+            Task { @MainActor in await SelfTest.jevLook(); NSApp.terminate(nil) }
+        }
+        if CommandLine.arguments.contains("--papertest") {
+            Task { @MainActor in await SelfTest.paper(); NSApp.terminate(nil) }
+        }
         if CommandLine.arguments.contains("--namedtest") {
             Task { @MainActor in await SelfTest.named(); NSApp.terminate(nil) }
         }
@@ -243,6 +252,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if CommandLine.arguments.contains("--codetest") {
             Task { @MainActor in await SelfTest.code(); NSApp.terminate(nil) }
+        }
+        if CommandLine.arguments.contains("--pstest") {
+            Task { @MainActor in await SelfTest.photoshop(); NSApp.terminate(nil) }
         }
         if CommandLine.arguments.contains("--mcptest") {
             Task { @MainActor in await SelfTest.mcp(); NSApp.terminate(nil) }
@@ -366,6 +378,13 @@ struct ModelsSection: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
+            Toggle(isOn: $store.useJevLooks) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Check the screen with Jev")
+                    Text("After each change, Jev compares screenshots from before and after, so the card can say whether the change shows. It also finds what Llasso rings and answers the model's quick questions about the screen, in about half a second each. Screenshots go to Jev through OpenRouter. Off, Llasso goes by what the app reports.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             HStack {
                 Text(listStatus).font(.caption).foregroundStyle(.secondary)
                 Spacer()
@@ -452,11 +471,30 @@ final class SettingsForm: ObservableObject {
     @Published var screenOK = CGPreflightScreenCaptureAccess()
     @Published var axOK = AXIsProcessTrusted()
     @Published var micOK = VoiceInput.microphoneAllowed
+    /// The keys ticked under Use. Settings takes them once they include ⌃, ⌥ or ⌘.
+    @Published var dragKeys = Settings.shared.dragKeys
 
     func refresh() {
         screenOK = CGPreflightScreenCaptureAccess()
         axOK = AXIsProcessTrusted()
         micOK = VoiceInput.microphoneAllowed
+    }
+}
+
+/// A key that is held for the drag or not: filled in the accent colour when it is, even while
+/// the window is in the background.
+struct KeyChip: ButtonStyle {
+    var on: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13))
+            .padding(.horizontal, 10)
+            .frame(height: 26)
+            .foregroundStyle(on ? Color.white : Color.primary)
+            .background(RoundedRectangle(cornerRadius: 6).fill(on ? Color.accentColor : Color.secondary.opacity(0.15)))
+            .opacity(configuration.isPressed ? 0.7 : 1)
+            .contentShape(RoundedRectangle(cornerRadius: 6))
     }
 }
 
@@ -594,13 +632,38 @@ struct SettingsView: View {
                 permission("Microphone", ok: form.micOK, need: "To talk instead of type") {
                     Task { form.micOK = await VoiceInput.requestMicrophone() }
                 }
-                permission("Accessibility", ok: form.axOK, need: "For ⌘-drag, and to read the app's file and URL") {
+                permission("Accessibility", ok: form.axOK, need: "For \(settings.dragKeys.symbols)-drag, and to read the app's file and URL") {
                     let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
                     _ = AXIsProcessTrustedWithOptions(opts as CFDictionary)
                 }
             }
             Section("Use") {
-                Text("Hold ⌘ and drag a box round anything. The prompt opens when you let go: type and press Return, or hold the mic and talk. Where ⌘-drag doesn't reach, press ⌃⌥S or choose Draw a box from the menu bar. Esc closes the prompt.")
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Keys to hold while you drag a box")
+                    HStack(spacing: 6) {
+                        ForEach(DragKeys.each, id: \.symbol) { k in
+                            let on = form.dragKeys.contains(k.key)
+                            Button(k.symbol + " " + k.name) {
+                                setDragKeys(on ? form.dragKeys.subtracting(k.key) : form.dragKeys.union(k.key))
+                            }
+                            .buttonStyle(KeyChip(on: on))
+                            .accessibilityAddTraits(on ? .isSelected : [])
+                        }
+                        Spacer()
+                        if form.dragKeys != .standard {
+                            Button("Use ⌘") { setDragKeys(.standard) }
+                        }
+                    }
+                    if form.dragKeys.isUsable {
+                        Text("Llasso takes every drag made with exactly these keys held, so choose keys your other apps don't need for dragging. A click with them still goes to the app.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Label("Choose ⌃, ⌥ or ⌘ as well. Until then Llasso keeps using \(settings.dragKeys.symbols).", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                }
+                .padding(.vertical, 2)
+                Text("Hold \(settings.dragKeys.symbols) and drag a box round anything. The prompt opens when you let go: type and press Return, or hold the mic and talk. Where \(settings.dragKeys.symbols)-drag doesn't reach, press ⌃⌥S or choose Draw a box from the menu bar. Esc closes the prompt.")
                     .font(.callout)
             }
             UpdatesSection()
@@ -610,6 +673,11 @@ struct SettingsView: View {
         .onReceive(timer) { _ in
             form.refresh()
         }
+    }
+
+    private func setDragKeys(_ keys: DragKeys) {
+        form.dragKeys = keys
+        if keys.isUsable { settings.dragKeys = keys }
     }
 
     /// Checks the key with OpenRouter before keeping it, so a wrong paste shows here
@@ -1376,6 +1444,411 @@ enum SelfTest {
         }
     }
 
+    /// `--checktest`: Jev's looks in a real app. In a TextEdit note, Replace must be seen on
+    /// screen, and a script that changes nothing must be flagged. Two quick looks must answer
+    /// yes and no. Then two rings over look-test screenshots, where a model's point that misses
+    /// should be moved onto the control. Writes checktest.json and closes the note unsaved.
+    static func check() async {
+        var r: [String: Any] = [:]
+        defer {
+            if let data = try? JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys]) {
+                try? data.write(to: History.folder.appendingPathComponent("checktest.json"))
+            }
+        }
+        guard let screen = NSScreen.main else { return }
+        r["looks on"] = Glance.on
+        func seen(_ job: Job) async -> String {
+            for _ in 0..<40 {
+                switch job.card.proposal?.seen {
+                case .shows?: return "shows"
+                case .missing?: return "missing"
+                default: try? await Task.sleep(nanoseconds: 250_000_000)
+                }
+            }
+            return job.card.error.map { "error: " + $0 } ?? "no answer"
+        }
+        do {
+            // The note exists before TextEdit comes forward, so coming forward doesn't open the Open panel.
+            _ = try await Shell.osascript("""
+            tell application "TextEdit"
+                make new document
+                set text of front document to "The quick brown fox jumps."
+                set size of text of front document to 40
+                activate
+            end tell
+            """)
+            try await Task.sleep(nanoseconds: 1_500_000_000)
+            guard let te = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.TextEdit").first else {
+                throw ActionError.failed("TextEdit didn't start")
+            }
+            let appEl = AXUIElementCreateApplication(te.processIdentifier)
+            // A fresh launch shows TextEdit's Open panel, and the note's window can take a few
+            // seconds to appear behind it: wait for the note, pressing Escape on the panel.
+            var found: AXUIElement?
+            for _ in 0..<12 {
+                found = Self.textArea(containing: "quick brown fox", in: appEl, depth: 0)
+                if found != nil { break }
+                try? Actuator.press(53, command: false, to: te)
+                try await Task.sleep(nanoseconds: 500_000_000)
+            }
+            guard let area = found, let frame = ContextReader.frame(area) else {
+                r["trusted"] = AXIsProcessTrusted()
+                r["windows"] = (ContextReader.attr(appEl, kAXWindowsAttribute) as [AXUIElement]? ?? []).map { w in
+                    (ContextReader.attr(w, kAXTitleAttribute) as String? ?? "?") + " / " + (ContextReader.attr(w, kAXSubroleAttribute) as String? ?? "?")
+                }
+                throw ActionError.failed("no text area")
+            }
+            ContextReader.select(BoxedRange(location: 0, length: 26), in: area)
+            // The box: the top of the note, in AppKit coordinates.
+            let mainHeight = NSScreen.screens.first?.frame.height ?? 0
+            let h = min(frame.height, 160)
+            let box = CGRect(x: frame.minX, y: mainHeight - frame.minY - h, width: min(frame.width, 700), height: h)
+            let ctx = ContextReader.read(app: te, selection: box)
+            r["can replace"] = ctx.canReplaceText
+
+            let start = Date()
+            let replace = Controller.shared.makeTestJob(frontApp: te, box: (box, screen), context: ctx)
+            await replace.proposeForTest(.text(text: "The slow green turtle naps.", summary: "Rewrite the sentence about a turtle"))
+            replace.card.onDestination?(.replaceInPlace(app: "TextEdit"))
+            r["replace seen"] = await seen(replace)
+            r["replace seconds"] = Double(Int(Date().timeIntervalSince(start) * 10)) / 10
+            r["text after"] = ContextReader.attr(area, kAXValueAttribute) as String? ?? "?"
+
+            let idle = Controller.shared.makeTestJob(frontApp: te, box: (box, screen), context: ctx)
+            await idle.proposeForTest(.script(source: "return 1", summary: "Change the TextEdit text to say Banana split"))
+            idle.card.onDestination?(.run)
+            r["idle script seen"] = await seen(idle)
+
+            if let shot = await Glance.screen((box, screen)) { try? shot.write(to: History.folder.appendingPathComponent("checktest-screen.png")) }
+            r["look yes"] = await replace.lookForTest(["question": "Does a TextEdit window show the words slow green turtle?", "kind": "yes_no"])
+            r["look no"] = await replace.lookForTest(["question": "Does a TextEdit window show the word Banana?", "kind": "yes_no"])
+            replace.close(); idle.close()
+        } catch { r["error"] = error.localizedDescription }
+        _ = try? await Shell.osascript("tell application \"TextEdit\" to close front document saving no")
+
+        // Rings: the model points, and Jev may move the ring onto the control.
+        let f = screen.visibleFrame
+        var rings: [[String: Any]] = []
+        for (file, prompt, truth) in [
+            ("look-light-7-card.png", "Point at the button that closes this card.", CGRect(x: 0.834, y: 0.390, width: 0.119, height: 0.077)),
+            ("look-light-5-prompt.png", "Ring the Fix button on the prompt.", CGRect(x: 0.639, y: 0.755, width: 0.043, height: 0.047)),
+            ("look-light-5-prompt.png", "Ring the Change button on the prompt.", CGRect(x: 0.691, y: 0.755, width: 0.074, height: 0.047)),
+        ] {
+            guard let crop = try? Data(contentsOf: History.folder.appendingPathComponent(file)) else { continue }
+            let job = Controller.shared.startTestJob(box: (CGRect(x: f.minX + 80, y: f.minY + 80, width: 640, height: 400), screen),
+                                                     context: ScreenContext(appName: "Safari", bundleID: "com.apple.Safari"),
+                                                     prompt: prompt, crop: crop)
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            for _ in 0..<120 where job.isRunning { try? await Task.sleep(nanoseconds: 250_000_000) }
+            // Jev's look runs after the ring shows.
+            for _ in 0..<16 where job.rings.last?.jev == nil { try? await Task.sleep(nanoseconds: 250_000_000) }
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            if let ring = job.rings.last {
+                let final = ring.moved ? ring.jev! : ring.model
+                rings.append(["prompt": prompt, "model hit": truth.contains(ring.model), "jev placed": ring.jev != nil,
+                              "final hit": truth.contains(final), "moved": ring.moved])
+            } else {
+                rings.append(["prompt": prompt, "error": "no ring", "answer": job.card.answer])
+            }
+            job.close()
+        }
+        r["rings"] = rings
+        // A model that misses, set on purpose: right points must stay, wrong ones should move onto the control.
+        var forced: [[String: Any]] = []
+        let card = CGRect(x: 0.834, y: 0.390, width: 0.119, height: 0.077), change = CGRect(x: 0.691, y: 0.755, width: 0.074, height: 0.047)
+        let fix = CGRect(x: 0.639, y: 0.755, width: 0.043, height: 0.047), copy = CGRect(x: 0.197, y: 0.390, width: 0.095, height: 0.077)
+        for (file, x, y, target, truth) in [
+            ("look-light-7-card.png", 0.37, 0.43, "the Thanks! button on the card", card),
+            ("look-light-7-card.png", 0.89, 0.43, "the Thanks! button on the card", card),
+            ("look-light-7-card.png", 0.37, 0.43, "the Copy button on the card", copy),
+            ("look-light-5-prompt.png", 0.66, 0.78, "the Change button on the prompt", change),
+            ("look-light-5-prompt.png", 0.66, 0.78, "the Fix button on the prompt", fix),
+            ("look-light-5-prompt.png", 0.73, 0.78, "the Change button on the prompt", change),
+        ] {
+            guard let crop = try? Data(contentsOf: History.folder.appendingPathComponent(file)) else { continue }
+            let job = Controller.shared.makeTestJob(frontApp: nil, box: (CGRect(x: f.minX + 80, y: f.minY + 80, width: 640, height: 400), screen),
+                                                    context: ScreenContext(appName: "Safari", bundleID: "com.apple.Safari"))
+            job.ringForTest(crop: crop, x: x, y: y, target: target)
+            for _ in 0..<16 where job.rings.last?.jev == nil { try? await Task.sleep(nanoseconds: 250_000_000) }
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard let ring = job.rings.last else { continue }
+            let final = ring.moved ? ring.jev! : ring.model
+            forced.append(["target": target, "start hit": truth.contains(ring.model), "moved": ring.moved, "final hit": truth.contains(final)])
+            job.close()
+        }
+        r["forced rings"] = forced
+    }
+
+    /// `--jevlooktest`: how fast and how well Jev 1.14 reads Llasso's own look-test screenshots,
+    /// against the chat models ringing the same control with point_at. Each Box case has the
+    /// control's true edges; a hit means the box's centre lands inside them. Writes jevlooktest.json.
+    static func jevLook() async {
+        let dir = History.folder
+        // Jev takes pictures up to 1,568 px a side and doesn't resize them itself.
+        func png(_ name: String, scale: CGFloat = 1) -> Data? {
+            guard let d = try? Data(contentsOf: dir.appendingPathComponent(name)) else { return nil }
+            guard let src = NSImage(data: d), let rep = src.representations.first else { return d }
+            let fit = min(scale, 1568 / CGFloat(max(rep.pixelsWide, rep.pixelsHigh)))
+            guard fit < 1 else { return d }
+            let size = CGSize(width: (CGFloat(rep.pixelsWide) * fit).rounded(), height: (CGFloat(rep.pixelsHigh) * fit).rounded())
+            guard let ctx = CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+                  let cg = src.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return d }
+            ctx.interpolationQuality = .high
+            ctx.draw(cg, in: CGRect(origin: .zero, size: size))
+            return ctx.makeImage().flatMap { try? Capture.png($0) } ?? d
+        }
+        struct BoxCase { var name, file, target: String; var truth: CGRect; var scale: CGFloat = 1 }
+        let boxes = [
+            BoxCase(name: "card Thanks", file: "look-light-7-card.png", target: "the Thanks! button on the card in the screenshot",
+                    truth: CGRect(x: 0.834, y: 0.390, width: 0.119, height: 0.077)),
+            BoxCase(name: "card Thanks half size", file: "look-light-7-card.png", target: "the Thanks! button on the card in the screenshot",
+                    truth: CGRect(x: 0.834, y: 0.390, width: 0.119, height: 0.077), scale: 0.5),
+            BoxCase(name: "card Ask more", file: "look-light-7-card.png", target: "the Ask more button on the card in the screenshot",
+                    truth: CGRect(x: 0.305, y: 0.390, width: 0.133, height: 0.077)),
+            BoxCase(name: "settings Design Change", file: "look-light-8-settings-saved.png", target: "the Change button on the Design row in the screenshot",
+                    truth: CGRect(x: 0.813, y: 0.500, width: 0.131, height: 0.028)),
+            BoxCase(name: "settings Jev switch", file: "look-light-8-settings-saved.png", target: "the on/off switch beside Read requests with Jev in the screenshot",
+                    truth: CGRect(x: 0.878, y: 0.872, width: 0.066, height: 0.018)),
+            BoxCase(name: "prompt Change chip", file: "look-light-5-prompt.png", target: "the Change button on the prompt in the screenshot",
+                    truth: CGRect(x: 0.691, y: 0.755, width: 0.074, height: 0.047)),
+            BoxCase(name: "prompt photo", file: "look-light-5-prompt.png", target: "the photo of the sky in the screenshot",
+                    truth: CGRect(x: 0.500, y: 0.099, width: 0.292, height: 0.399)),
+            BoxCase(name: "card Copy", file: "look-light-7-card.png", target: "the Copy button on the card in the screenshot",
+                    truth: CGRect(x: 0.197, y: 0.390, width: 0.095, height: 0.077)),
+            BoxCase(name: "settings Writing Change", file: "look-light-8-settings-saved.png", target: "the Change button on the Writing row in the screenshot",
+                    truth: CGRect(x: 0.813, y: 0.372, width: 0.131, height: 0.028)),
+            BoxCase(name: "settings key field", file: "look-light-8-settings-saved.png", target: "the text field for pasting a key in the screenshot",
+                    truth: CGRect(x: 0.056, y: 0.146, width: 0.767, height: 0.041)),
+            BoxCase(name: "prompt Fix chip", file: "look-light-5-prompt.png", target: "the Fix button on the prompt in the screenshot",
+                    truth: CGRect(x: 0.639, y: 0.755, width: 0.043, height: 0.047)),
+        ]
+        let client = Settings.shared.client
+        var r: [String: Any] = [:]
+        func hit(_ b: CGRect?, _ truth: CGRect) -> Bool { b.map { truth.contains(CGPoint(x: $0.midX, y: $0.midY)) } ?? false }
+        func round(_ v: Double) -> Double { (v * 1000).rounded() / 1000 }
+        var jevRows: [[String: Any]] = []
+        for c in boxes {
+            guard let image = png(c.file, scale: c.scale) else { continue }
+            let start = Date()
+            do {
+                let (a, cost) = try await client.decide(state: ["A screenshot of a Mac screen:", Jev.image(image)],
+                                                        questions: ["target": ["type": "box", "instructions": c.target]])
+                let b = Jev.box(a["target"])
+                let found = Date().timeIntervalSince(start)
+                // Second look: crop round the box (at least 320 px a side, Jev's floor is 280)
+                // and ask whether the target sits at its centre.
+                var confirmed: Double = -1
+                if let b, let full = NSImage(data: image)?.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+                    let W = CGFloat(full.width), H = CGFloat(full.height)
+                    // Slide the crop back inside the picture rather than clip it below Jev's floor.
+                    let w = min(max(b.width * W * 2.5, 320), W), h = min(max(b.height * H * 2.5, 320), H)
+                    let rect = CGRect(x: min(max(b.midX * W - w / 2, 0), W - w), y: min(max(b.midY * H - h / 2, 0), H - h),
+                                      width: w, height: h).integral
+                    if let crop = full.cropping(to: rect), let d = try? Capture.png(crop),
+                       let (v, _) = try? await client.decide(state: ["A close-up from a Mac screen:", Jev.image(d)],
+                            questions: ["here": ["type": "noul", "instructions": "Is " + c.target.replacingOccurrences(of: " in the screenshot", with: "") + " the thing at the centre of this close-up?"]]) {
+                        confirmed = ((v["here"] as? [String: Any])?["noul"] as? Double) ?? -1
+                    }
+                }
+                jevRows.append(["case": c.name, "seconds": round(found), "withCheck": round(Date().timeIntervalSince(start)),
+                                "confirmed": round(confirmed), "hit": hit(b, c.truth),
+                                "box": b.map { [round($0.minX), round($0.minY), round($0.maxX), round($0.maxY)] } ?? [],
+                                "confidence": (a["target"] as? [String: Any])?["confidence"] ?? 0, "cost": cost ?? 0, "kb": image.count / 1024])
+            } catch {
+                jevRows.append(["case": c.name, "seconds": round(Date().timeIntervalSince(start)), "error": error.localizedDescription])
+            }
+        }
+        r["jev.box"] = jevRows
+        // Yes/no checks and a choice, one request each, then all four in one request.
+        let checks: [(String, String, [String: Any], Any)] = [
+            ("card shows Thanks", "look-light-7-card.png", ["type": "noul", "instructions": "Does the screenshot show a result card with a Thanks! button?"], 1),
+            ("card shows error", "look-light-7-card.png", ["type": "noul", "instructions": "Does the screenshot show an error message?"], 0),
+            ("key saved", "look-light-8-settings-saved.png", ["type": "noul", "instructions": "Does the screenshot say a key is saved?"], 1),
+            ("lean choice", "look-light-8-settings-saved.png", ["type": "choice", "instructions": "Which Lean towards option is selected in the screenshot?",
+                                                                "criteria": ["best": "Best results", "balanced": "Balanced", "lowest": "Lowest cost"]], "balanced"),
+            ("coding model choice", "look-light-8-settings-saved.png", ["type": "choice", "instructions": "Which model does the Coding row use in the screenshot?",
+                                                                        "criteria": ["haiku": "Claude Haiku 5.5", "sonnet": "Claude Sonnet 5.5", "opus": "Claude Opus 5.5"]], "opus"),
+            ("writing is Opus", "look-light-8-settings-saved.png", ["type": "noul", "instructions": "Does the Writing row in the screenshot use Claude Opus 5.5?"], 0),
+            ("prompt has typed text", "look-light-5-prompt.png", ["type": "noul", "instructions": "Has the user typed a request into the prompt's text field in the screenshot? Grey placeholder text does not count."], 0),
+            ("prompt showing", "look-light-5-prompt.png", ["type": "noul", "instructions": "Does the screenshot show a prompt with Explain, Fix, Change and Make buttons?"], 1),
+            ("card shows image", "look-light-7-card.png", ["type": "noul", "instructions": "Does the card in the screenshot show a picture it made?"], 0),
+            ("card is about sky", "look-light-7-card.png", ["type": "noul", "instructions": "Is the card's answer about the sky in a photo?"], 1),
+        ]
+        var checkRows: [[String: Any]] = []
+        for (name, file, q, want) in checks {
+            guard let image = png(file) else { continue }
+            let start = Date()
+            do {
+                let (a, cost) = try await client.decide(state: ["A screenshot of a Mac screen:", Jev.image(image)], questions: ["q": q])
+                let ans = a["q"] as? [String: Any] ?? [:]
+                let got: Any = ans["choice"] ?? ans["noul"] ?? "none"
+                let right: Bool
+                if let p = got as? Double, let w = want as? Int { right = (p >= 0.5) == (w == 1) } else { right = "\(got)" == "\(want)" }
+                checkRows.append(["case": name, "seconds": round(Date().timeIntervalSince(start)), "answer": got, "right": right, "cost": cost ?? 0])
+            } catch {
+                checkRows.append(["case": name, "seconds": round(Date().timeIntervalSince(start)), "error": error.localizedDescription])
+            }
+        }
+        r["jev.checks"] = checkRows
+        // Before and after: did the change Llasso made land?
+        let pairs: [(String, String, String, String, Int)] = [
+            ("key saved", "look-light-8-settings-nokey.png", "look-light-8-settings-saved.png", "Was an OpenRouter key saved between the first screenshot and the second?", 1),
+            ("lean unchanged", "look-light-8-settings-nokey.png", "look-light-8-settings-saved.png", "Did the Lean towards setting change between the first screenshot and the second?", 0),
+            ("same twice", "look-light-8-settings-saved.png", "look-light-8-settings-saved.png", "Did the Coding row's model change between the first screenshot and the second?", 0),
+            ("typed into prompt", "look-light-5-prompt.png", "look-light-5c-long.png", "Was a request typed into the prompt between the first screenshot and the second?", 1),
+        ]
+        var pairRows: [[String: Any]] = []
+        for (name, a, b, q, want) in pairs {
+            guard let before = png(a), let after = png(b) else { continue }
+            let start = Date()
+            do {
+                let (ans, _) = try await client.decide(state: ["First screenshot, before:", Jev.image(before), "Second screenshot, after:", Jev.image(after)],
+                                                       questions: ["q": ["type": "noul", "instructions": q]])
+                let p = ((ans["q"] as? [String: Any])?["noul"] as? Double) ?? -1
+                pairRows.append(["case": name, "seconds": round(Date().timeIntervalSince(start)), "answer": round(p), "right": (p >= 0.5) == (want == 1)])
+            } catch {
+                pairRows.append(["case": name, "seconds": round(Date().timeIntervalSince(start)), "error": error.localizedDescription])
+            }
+        }
+        r["jev.beforeAfter"] = pairRows
+        if let card = png("look-light-7-card.png") {
+            let start = Date()
+            let a = try? await client.decide(state: ["A screenshot of a Mac screen:", Jev.image(card)], questions: [
+                "shown": ["type": "noul", "instructions": "Does the screenshot show a result card with a Thanks! button?"],
+                "error": ["type": "noul", "instructions": "Does the screenshot show an error message?"],
+                "thanks": ["type": "box", "instructions": "the Thanks! button on the card in the screenshot"],
+                "copy": ["type": "box", "instructions": "the Copy button on the card in the screenshot"]])
+            r["jev.fourInOne"] = ["seconds": round(Date().timeIntervalSince(start)), "answered": a?.answers.count ?? 0,
+                                  "thanksHit": hit(Jev.box(a?.answers["thanks"]), boxes[0].truth),
+                                  "copyHit": hit(Jev.box(a?.answers["copy"]), CGRect(x: 0.197, y: 0.390, width: 0.095, height: 0.077))]
+        }
+        // The same rings by the chat models, as Llasso asks for them today.
+        var chatRows: [[String: Any]] = []
+        for model in ["anthropic/claude-haiku-5.5", "anthropic/claude-sonnet-5.5"] {
+            for c in [boxes[0], boxes[3], boxes[5]] {
+                guard let image = png(c.file) else { continue }
+                let start = Date()
+                var calls: [ToolCall] = []
+                do {
+                    let messages = [ChatMessage.system("Ring what the user asks for with point_at. Answer with the tool call only."),
+                                    ChatMessage(role: "user", parts: [.png(image), .text("Point at " + c.target + ".")])]
+                    for try await chunk in client.streamTurn(model: model, messages: messages, tools: [BuiltinTool.pointAt.schema]) {
+                        if case .tools(let t) = chunk { calls = t }
+                    }
+                } catch { chatRows.append(["model": model, "case": c.name, "error": error.localizedDescription]); continue }
+                let x = calls.first?.args["x"] as? Double ?? -1, y = calls.first?.args["y"] as? Double ?? -1
+                chatRows.append(["model": model, "case": c.name, "seconds": round(Date().timeIntervalSince(start)),
+                                 "hit": c.truth.contains(CGPoint(x: x, y: y)), "point": [round(x), round(y)]])
+            }
+        }
+        r["chat.point"] = chatRows
+        if let data = try? JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: dir.appendingPathComponent("jevlooktest.json"))
+        }
+    }
+
+    /// `--papertest`: a scratch Paper file whose three artboards all say "Overviw", plus "An
+    /// overview of the year" as a decoy. A box over Home's "Overviw" asks "change to Overview"
+    /// with nothing selected. Llasso should change it through Paper's tools, then find the two
+    /// others and ask; the test answers yes. The scratch file is archived and the file that was
+    /// open comes back; its tab stays open, since Paper's tools can't close one. Writes papertest.json.
+    static func paper() async {
+        var r: [String: Any] = [:]
+        defer {
+            Integrations.shared.stopAll()
+            if let data = try? JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys]) {
+                try? data.write(to: History.folder.appendingPathComponent("papertest.json"))
+            }
+        }
+        guard let screen = NSScreen.main,
+              let paper = Integrations.shared.integration(bundleID: "com.todesktop.2601167vjw8xe", appName: "Paper"),
+              let mcp = await Integrations.shared.client(for: paper) else { r["error"] = "Paper not connected"; return }
+        // Paper answers with JSON objects back to back; the last one holds the result.
+        func last(_ text: String) -> [String: Any] {
+            var depth = 0, start: String.Index?, inString = false, escaped = false
+            var found: [String: Any] = [:]
+            for i in text.indices {
+                let c = text[i]
+                if inString { if escaped { escaped = false } else if c == "\\" { escaped = true } else if c == "\"" { inString = false }; continue }
+                if c == "\"" { inString = true } else if c == "{" { if depth == 0 { start = i }; depth += 1 }
+                else if c == "}" { depth -= 1
+                    if depth == 0, let s = start, let o = try? JSONSerialization.jsonObject(with: Data(text[s...i].utf8)) as? [String: Any] { found = o }
+                }
+            }
+            return found
+        }
+        func call(_ tool: String, _ args: [String: Any]) async -> (json: [String: Any], images: [Data]) {
+            let out = try? await mcp.callTool(tool, arguments: args)
+            return (last(out?.text ?? ""), out?.images ?? [])
+        }
+        let before = (await call("get_basic_info", [:]).json["url"] as? String)?.components(separatedBy: "/file/").last?.components(separatedBy: "/").first
+        guard let file = await call("create_file", ["name": "Llasso scratch: wider check test"]).json["fileId"] as? String else {
+            r["error"] = "create_file failed"; return
+        }
+        _ = await call("open_file", ["fileId": file])
+        var words: [String: String] = [:]
+        for (name, body) in [("Home", "Welcome back."), ("Pricing", "Plans for every team."), ("About", "An overview of the year")] {
+            guard let board = await call("create_artboard", ["fileId": file, "name": name,
+                    "styles": ["width": "800px", "height": "320px", "backgroundColor": "#ffffff", "padding": "32px", "gap": "24px"]]).json["id"] as? String
+            else { continue }
+            let html = """
+            <div layer-name="Nav" style="display:flex;gap:24px;font-family:Inter;font-size:16px;color:#111"><span layer-name="Nav overview">Overviw</span><span>Pricing</span><span>Help</span></div>\
+            <div style="font-family:Inter;font-size:40px;font-weight:600;color:#111">\(name)</div>\
+            <div style="font-family:Inter;font-size:18px;color:#444">\(body)</div>
+            """
+            _ = await call("write_html", ["fileId": file, "targetNodeId": board, "mode": "insert-children", "html": html])
+            words[name] = board
+        }
+        let typos = (await call("find_nodes", ["fileId": file, "textValue": "Overviw"]).json["nodes"] as? [[String: Any]]) ?? []
+        r["setup.typos"] = typos.count
+        // The box: Home's "Overviw", with Home's artboard as the screen around it.
+        var homeWord: String?
+        for n in typos {
+            guard let id = n["id"] as? String else { continue }
+            let info = await call("get_node_info", ["fileId": file, "nodeId": id]).json
+            if (info["artboardId"] as? String ?? info["artboard"] as? String) == words["Home"] || homeWord == nil { homeWord = id }
+        }
+        guard let homeWord, let home = words["Home"],
+              let crop = await call("get_screenshot", ["fileId": file, "nodeId": homeWord, "scale": 2]).images.first else {
+            r["error"] = "setup failed"; return
+        }
+        let around = await call("get_screenshot", ["fileId": file, "nodeId": home]).images.first
+        var ctx = ScreenContext(appName: "Paper", bundleID: "com.todesktop.2601167vjw8xe", url: "https://app.paper.design/file/\(file)/p-1-0")
+        ctx.integration = "Paper"
+        let f = screen.visibleFrame
+        let start = Date()
+        let job = Controller.shared.startTestJob(
+            box: (CGRect(x: f.minX + 100, y: f.maxY - 200, width: 120, height: 40), screen), context: ctx,
+            prompt: "change to Overview", crop: crop, screenImage: around, integration: paper)
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        var asked = false
+        for _ in 0..<480 {
+            if let q = job.card.question, !asked {
+                asked = true
+                r["question"] = q.text
+                r["options"] = q.options
+                job.card.onAnswer?(q.options.first { $0.lowercased().hasPrefix("change") } ?? q.options.first ?? "yes")
+            }
+            if !job.isRunning && job.card.question == nil { break }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        r["seconds"] = Int(Date().timeIntervalSince(start))
+        r["answer"] = job.card.answer
+        r["error"] = job.card.error ?? ""
+        r["log"] = job.card.log
+        r["proposal"] = job.card.proposal != nil
+        func count(_ text: String) async -> Int {
+            ((await call("find_nodes", ["fileId": file, "textValue": text]).json["nodes"] as? [[String: Any]]) ?? []).count
+        }
+        r["after.Overview"] = await count("Overview")
+        r["after.Overviw"] = await count("Overviw")
+        r["after.decoy"] = await count("An overview of the year")
+        job.close()
+        _ = await call("archive_resources", ["resourceIds": [file]])
+        if let before { _ = await call("open_file", ["fileId": before]) }
+    }
+
     /// A Chrome box with "do this in Paper": Paper's server connects and the model's first
     /// call is one of Paper's tools. Nothing is written. Writes namedtest.json.
     static func named() async {
@@ -1454,6 +1927,154 @@ enum SelfTest {
         NSAttributedString(string: "Buy now", attributes: [.font: NSFont.systemFont(ofSize: 12)]).draw(at: CGPoint(x: 26, y: 64))
         NSGraphicsContext.restoreGraphicsState()
         return ctx.makeImage()!
+    }
+
+    /// `--pstest`: a scratch Photoshop document with a blue square and a selection. Reads the
+    /// state, exports the selected area, adds a picture back as a masked layer, runs every
+    /// Photoshop tool, takes the layer out, and checks each change is one "Llasso:" History
+    /// step. With `--model`, also runs a real request through the image model and adds the
+    /// result. Writes pstest.json and closes the document without saving.
+    static func photoshop() async {
+        var r: [String: Any] = [:]
+        var docID = 0
+        func js(_ s: String, _ timeout: TimeInterval = 60) async throws -> String {
+            try await PhotoshopApp.run(PhotoshopScript.prelude + s, timeout: timeout)
+        }
+        do {
+            let made = try await js("""
+            var d = app.documents.add(UnitValue(1200, "px"), UnitValue(800, "px"), 72, "Llasso test", NewDocumentMode.RGB, DocumentFill.WHITE);
+            var c = new SolidColor(); c.rgb.red = 30; c.rgb.green = 90; c.rgb.blue = 200;
+            d.selection.select([[400, 250], [800, 250], [800, 550], [400, 550]]);
+            d.selection.fill(c);
+            d.selection.select([[300, 200], [700, 200], [700, 500], [300, 500]]);
+            d.id;
+            """)
+            docID = Int(made) ?? 0
+            r["document"] = docID
+            let raw = try await js("llState(app.activeDocument);")
+            r["read.raw"] = raw
+            guard var state = PhotoshopApp.read(box: nil) else { throw PhotoshopError("read returned nothing") }
+            r["read.selection"] = state.selection.map { "\($0)" } ?? "none"
+            r["read.pass"] = state.documentID == docID && state.size == CGSize(width: 1200, height: 800)
+                && state.selection == CGRect(x: 300, y: 200, width: 400, height: 300)
+            // The box: a screen rect over document pixels 100,100 to 500,400, mapped back.
+            if let view = state.view {
+                let k = view.width / 1200
+                let tl = CGRect(x: view.minX + 100 * k, y: view.minY + 100 * k, width: 400 * k, height: 300 * k)
+                let appKit = CGRect(x: tl.minX, y: (NSScreen.screens.first?.frame.height ?? 0) - tl.maxY, width: tl.width, height: tl.height)
+                let mapped = PhotoshopApp.read(box: appKit)?.boxed
+                r["box.mapped"] = mapped.map { "\($0)" } ?? "none"
+                r["box.pass"] = mapped.map { abs($0.minX - 100) <= 2 && abs($0.minY - 100) <= 2 && abs($0.width - 400) <= 3 } ?? false
+                r["view"] = "\(view)"
+            }
+            // Export the selected area.
+            let png = try await PhotoshopApp.export(state)
+            let rep = NSBitmapImageRep(data: png)
+            r["export.size"] = "\(rep?.pixelsWide ?? 0)x\(rep?.pixelsHigh ?? 0)"
+            r["export.pass"] = rep?.pixelsWide == 400 && rep?.pixelsHigh == 300
+            // A picture at the image model's own size goes back over the selection.
+            let red = NSImage(size: NSSize(width: 512, height: 384), flipped: false) { rect in
+                NSColor.systemRed.setFill(); rect.fill(); return true
+            }
+            let redPNG = NSBitmapImageRep(data: red.tiffRepresentation!)!.representation(using: .png, properties: [:])!
+            let layer = try await PhotoshopApp.place(redPNG, state: state, name: "Llasso: test layer")
+            r["place.layer"] = layer
+            r["place.check"] = try await js("""
+            var L = app.activeDocument.activeLayer, b = L.bounds, units = app.preferences.rulerUnits;
+            app.preferences.rulerUnits = Units.PIXELS;
+            var ref = new ActionReference(); ref.putIdentifier(charIDToTypeID("Lyr "), \(layer));
+            var x = executeActionGet(ref);
+            var out = "name=" + L.name + " bounds=" + llPx(b[0]) + "," + llPx(b[1]) + "," + llPx(b[2]) + "," + llPx(b[3])
+                + " mask=" + x.getBoolean(stringIDToTypeID("hasUserMask"))
+                + " feather=" + (x.hasKey(stringIDToTypeID("userMaskFeather")) ? x.getUnitDoubleValue(stringIDToTypeID("userMaskFeather")) : "none")
+                + " kind=" + L.kind + " history=" + app.activeDocument.historyStates[app.activeDocument.historyStates.length - 1].name;
+            app.preferences.rulerUnits = units;
+            out;
+            """)
+            // Photoshop's own tools, each as one History step.
+            let tools: [(PhotoshopTool, [String: Any])] = [
+                (.adjust, ["kind": "brightness_contrast", "brightness": 30, "contrast": 10, "summary": "Brighter"]),
+                (.adjust, ["kind": "hue_saturation", "hue": 20, "saturation": -10, "summary": "Hue shift"]),
+                (.adjust, ["kind": "vibrance", "vibrance": 40, "summary": "More vibrance"]),
+                (.adjust, ["kind": "exposure", "exposure": 0.5, "summary": "Half a stop up"]),
+                (.adjust, ["kind": "black_and_white", "summary": "Black and white"]),
+                (.adjust, ["kind": "photo_filter", "colour": "#EC8A00", "density": 30, "summary": "Warm filter"]),
+                (.adjust, ["kind": "invert", "summary": "Invert"]),
+                (.select, ["what": "invert", "summary": "Invert selection"]),
+                (.select, ["what": "all", "summary": "Select all"]),
+                (.select, ["what": "none", "summary": "Deselect"]),
+                (.select, ["what": "box", "summary": "Select the box"]),
+                (.retouch, ["action": "blur", "amount": 4, "summary": "Soften"]),
+                (.retouch, ["action": "sharpen", "amount": 60, "summary": "Sharpen"]),
+                (.retouch, ["action": "content_aware_fill", "summary": "Remove it"]),
+                (.select, ["what": "subject", "summary": "Select the square"]),
+                (.select, ["what": "sky", "summary": "Select the sky"]),
+                (.retouch, ["action": "remove_background", "summary": "Cut out"]),
+            ]
+            var results: [String] = []
+            state.boxed = CGRect(x: 350, y: 220, width: 300, height: 260)
+            for (tool, args) in tools {
+                let label = "\(tool.rawValue) \(args["kind"] ?? args["what"] ?? args["action"] ?? "")"
+                do {
+                    if let now = try await PhotoshopApp.tool(tool, args: args, state: state, box: nil) {
+                        state.selection = now.selection
+                        results.append("ok   \(label) sel=\(now.selection.map { "\($0)" } ?? "none")")
+                    } else { results.append("ok?  \(label) (no state back)") }
+                } catch { results.append("FAIL \(label): \(error.localizedDescription)") }
+            }
+            r["tools"] = results
+            // Take the layer out again.
+            try await PhotoshopApp.remove(layer: layer, document: docID, name: "Llasso: remove layer")
+            r["remove.gone"] = try await js("""
+            var ref = new ActionReference(); ref.putIdentifier(charIDToTypeID("Lyr "), \(layer));
+            var gone = "true"; try { executeActionGet(ref); gone = "false"; } catch (e) {}
+            gone;
+            """) == "true"
+            let history = try await js("""
+            var h = app.activeDocument.historyStates, out = [];
+            for (var i = 0; i < h.length; i++) out.push(h[i].name);
+            out.join("\\n");
+            """)
+            r["history"] = history.components(separatedBy: "\n")
+            if CommandLine.arguments.contains("--model") {
+                // A real request: reset to the square selected, then ask for an edit.
+                _ = try await js("""
+                var d = llDoc(\(docID));
+                d.activeHistoryState = d.historyStates[1];
+                d.selection.select([[380, 230], [820, 230], [820, 570], [380, 570]]);
+                "ok";
+                """)
+                guard let ps = PhotoshopApp.read(box: nil), let screen = NSScreen.main else { throw PhotoshopError("re-read failed") }
+                var ctx = ScreenContext(appName: "Adobe Photoshop 2026", bundleID: PhotoshopApp.bundleID)
+                ctx.photoshop = ps
+                let f = screen.visibleFrame
+                let job = Controller.shared.startTestJob(box: (CGRect(x: f.minX + 100, y: f.maxY - 400, width: 300, height: 240), screen),
+                                                         context: ctx, prompt: "turn the blue square into a red hot-air balloon",
+                                                         crop: try await PhotoshopApp.export(ps))
+                for _ in 0..<480 where job.isRunning { try? await Task.sleep(nanoseconds: 500_000_000) }
+                r["model.answer"] = job.card.answer
+                r["model.log"] = job.card.log
+                r["model.error"] = job.card.error ?? ""
+                r["model.destinations"] = job.card.proposal?.destinations.map(\.label) ?? []
+                if let image = job.card.proposal?.image {
+                    try? image.write(to: History.folder.appendingPathComponent("pstest-model.png"))
+                    job.card.onDestination?(.addLayer(app: "Adobe Photoshop 2026"))
+                    for _ in 0..<120 where job.card.proposal?.done == nil && job.card.error == nil { try? await Task.sleep(nanoseconds: 500_000_000) }
+                    r["model.done"] = job.card.proposal?.done ?? ""
+                    r["model.after"] = job.card.proposal?.destinations.map(\.label) ?? []
+                    _ = try? await js("""
+                    var d = llDoc(\(docID)); var f = new File(\(PhotoshopScript.literal(History.folder.appendingPathComponent("pstest-result.png").path)));
+                    var c = d.duplicate("Llasso result", true); c.saveAs(f, new PNGSaveOptions(), true, Extension.LOWERCASE); c.close(SaveOptions.DONOTSAVECHANGES); "ok";
+                    """)
+                }
+                r["model.error"] = job.card.error ?? ""
+                job.close()
+            }
+        } catch {
+            r["error"] = error.localizedDescription
+        }
+        if docID != 0 { _ = try? await js("llDoc(\(docID)).close(SaveOptions.DONOTSAVECHANGES); 'closed';") }
+        write(r, "pstest.json")
     }
 
     /// Connect to every integration that has a server, list its tools and call one

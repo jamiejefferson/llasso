@@ -22,6 +22,8 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>Llasso — draw a box on anything and ask.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Llasso reads what you have selected in apps such as Photoshop, Excel and Numbers, and puts its changes back there.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Llasso listens while you hold a box, so you can talk instead of type. Speech is transcribed on your Mac.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

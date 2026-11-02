@@ -36,6 +36,22 @@ extension OpenRouterClient {
         return Jev.reading(from: data, categories: categories)
     }
 
+    /// Put typed questions to Jev about some state, which can hold screenshots (`Jev.image`).
+    /// Returns Jev's answers keyed by question, and the cost in USD when OpenRouter sends it.
+    public func decide(state: [Any], questions: [String: Any], model: String = Jev.visionModel,
+                       timeout: TimeInterval = 15) async throws -> (answers: [String: Any], cost: Double?) {
+        var req = try request(path: "decisions", body: ["model": model, "state": state, "questions": questions])
+        req.url = URL(string: Jev.path)
+        req.timeoutInterval = timeout
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try Self.check(data, response)
+        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw OpenRouterError.api("Jev sent back something that isn't JSON")
+        }
+        let cost = (obj["usage"] as? [String: Any])?["cost"] as? Double
+        return ((obj["answers"] as? [String: Any]) ?? obj, cost)
+    }
+
     /// Make a video clip. Video is a job OpenRouter runs in the background: submit it, poll
     /// until it is done, then download the clip. `progress` hears each status.
     public func video(model: String, prompt: String, firstFrame: Data?, seconds: Int?, aspect: String?,

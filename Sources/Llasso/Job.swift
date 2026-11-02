@@ -47,6 +47,10 @@ final class Job {
     private var chatChoice: Choice?
     private var modelID: String { chatChoice?.model.id ?? Settings.shared.model }
     private var actions: [String] = []
+    /// This request changed the app's file through its tools, and whether Llasso has since
+    /// checked for other places the same change belongs.
+    private var changedInApp = false
+    private var widerChecked = false
     /// The code edit on the card, kept so Undo can put the files back.
     private var codeEdit: (checkpoint: Checkpoint, before: String, after: String, files: [FileChange])?
 
@@ -113,6 +117,12 @@ final class Job {
     var isVisible: Bool { cardPanel?.isVisible ?? false }
     var cardFrame: CGRect? { cardPanel?.frame }
     func approveAllForTest() { approveAll = true }
+    func proposeForTest(_ p: Proposal) async { _ = await propose(p) }
+    func lookForTest(_ args: [String: Any]) async -> String { await look(args).text }
+    func ringForTest(crop: Data, x: Double, y: Double, target: String) {
+        capture = Capture(crop: crop, screen: crop)
+        ring(x: x, y: y, label: "Test", target: target)
+    }
 
     func contains(_ point: CGPoint) -> Bool { cardPanel.map { $0.isVisible && $0.frame.contains(point) } ?? false }
     func owns(_ window: NSWindow?) -> Bool { window != nil && window === cardPanel }
@@ -190,6 +200,9 @@ final class Job {
         if let mcp, let text = mcp.instructions, !text.isEmpty {
             guides.append("Guide from \(mcp.name) for its own tools (prefixed \(mcp.name)__):\n" + text)
         }
+        if let mcp, editsFile { guides.append(Brief.canvasGuide(app: mcp.name)) }
+        if Glance.on { guides.append(Brief.lookGuide) }
+        if context.photoshop != nil { guides.append(PhotoshopTool.guide) }
         messages = Brief.firstMessages(prompt: prompt, verb: verb, context: context,
                                        crop: cap.crop, screen: cap.screen, spoken: spoken, appGuides: guides)
         run()
@@ -213,8 +226,13 @@ final class Job {
         Log.write("router: \(r.work.rawValue)/\(r.difficulty.rawValue) by \(r.source.rawValue) → \(choice.model.id)\(choice.auto ? "" : " (chosen)")")
     }
 
+    /// The connected app's tools edit its file, so text changes go through them.
+    private var editsFile: Bool { mcp != nil && !(integration?.edits.isEmpty ?? true) }
+
     func followUp(_ text: String) {
         lastPrompt = text
+        changedInApp = false
+        widerChecked = false
         startReading(text)
         spoken = false
         messages.append(ChatMessage(role: "user", parts: [.text(text)]))
@@ -248,8 +266,13 @@ final class Job {
         let client = settings.client
         let model = modelID
         let speak = spoken && settings.voiceOut != .off
-        var tools = BuiltinTool.available(for: context.kind, hasSource: context.source != nil).map(\.schema)
+        var builtins = BuiltinTool.available(for: context.kind, hasSource: context.source != nil)
+        // A paste can't reach a design file, so its text changes go through the app's own tools.
+        if editsFile { builtins.removeAll { $0 == .proposeText } }
+        if Glance.on { builtins.append(.look) }
+        var tools = builtins.map(\.schema)
         if let mcp, let integration { tools += Integrations.shared.toolSchemas(mcp, blocked: integration.blocked, offered: integration.offered) }
+        if context.photoshop != nil { tools += PhotoshopTool.allCases.map(\.schema) }
         var shown = ""
         do {
             // Browsing a page can take many small steps: scroll, read, scroll again.
@@ -275,6 +298,16 @@ final class Job {
                 if !text.isEmpty { shown = prefix + text }
                 messages.append(.assistant(text, calls: calls))
                 Log.write("turn \(step + 1): \(String(format: "%.1f", Date().timeIntervalSince(turnStart)))s, \(calls.count) call(s), \(messages.count) messages")
+                // A change in the app's file isn't done until Llasso has looked for the other
+                // places it belongs, such as the same word on other artboards.
+                if calls.isEmpty, changedInApp, !widerChecked, let mcp {
+                    widerChecked = true
+                    messages.append(.user(Brief.widerCheck(app: mcp.name)))
+                    card.working = "Checking whether this belongs anywhere else…"
+                    card.state = .thinking
+                    Log.write("wider check")
+                    continue
+                }
                 if calls.isEmpty { break }
 
                 var images: [Data] = []
@@ -337,8 +370,12 @@ final class Job {
                 card.state = .thinking
                 return Outcome(text: "The user answered: \(answer)")
             case .pointAt:
-                point(x: args["x"] as? Double ?? 0.5, y: args["y"] as? Double ?? 0.5, label: args["label"] as? String ?? "Here")
+                let label = args["label"] as? String ?? "Here"
+                ring(x: args["x"] as? Double ?? 0.5, y: args["y"] as? Double ?? 0.5, label: label,
+                     target: (args["target"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? label)
                 return Outcome(text: "Ringed the point on screen.")
+            case .look:
+                return await look(args)
             case .editCode:
                 return await editCode(instruction: args["instruction"] as? String ?? lastPrompt,
                                       summary: args["summary"] as? String ?? "")
@@ -349,6 +386,7 @@ final class Job {
                 return await propose(p)
             }
         }
+        if let tool = PhotoshopTool.named(call.name) { return await photoshop(tool, args) }
         guard let mcp, let (server, tool) = ToolName.split(call.name), server == ToolName.clean(mcp.name),
               let spec = mcp.tools.first(where: { $0.name == tool }) else {
             return Outcome(text: "There is no tool called \(call.name).")
@@ -369,14 +407,62 @@ final class Job {
         card.state = .thinking
         card.working = why.flatMap { $0.isEmpty ? nil : $0 + "…" } ?? "\(mcp.name): \(tool.replacingOccurrences(of: "_", with: " "))…"
         defer { card.working = nil }
+        // A change to the app's file: look at the screen before, to tell afterwards whether it shows.
+        let edits = integration?.edits.contains(tool) == true
+        let before = edits && Glance.on ? await Glance.screen(box) : nil
         do {
             let r = try await mcp.callTool(tool, arguments: args)
-            card.log.append((r.isError ? "✕ " : "✓ ") + "\(mcp.name) \(tool)")
             if !spec.readOnly { actions.append("\(mcp.name).\(tool)") }
-            return Outcome(text: String(r.text.prefix(20_000)).ifEmpty("Done."), images: r.images)
+            if !r.isError, edits { changedInApp = true }
+            var text = String(r.text.prefix(20_000)).ifEmpty("Done.")
+            var line = (r.isError ? "✕ " : "✓ ") + "\(mcp.name) \(tool)"
+            if !r.isError, let before {
+                let change = why.flatMap { $0.isEmpty ? nil : $0 } ?? "\(mcp.name) \(tool.replacingOccurrences(of: "_", with: " "))"
+                // One look: changes in the file are often off screen, where a second look can't help.
+                switch await Glance.landed(change, before: before, box: box, retry: false) {
+                case let p? where p >= 0.5:
+                    line += " · seen on screen"
+                    text += "\n\nLlasso looked at the screen afterwards: the change shows."
+                case .some:
+                    text += "\n\nLlasso looked at the screen afterwards and can't see the change. That is expected when it is outside the visible area; if it should be on screen, check it with the app's tools."
+                case nil: break
+                }
+            }
+            card.log.append(line)
+            return Outcome(text: text, images: r.images)
         } catch {
             card.log.append("✕ \(mcp.name) \(tool)")
             return Outcome(text: "The tool failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// One of Photoshop's own tools, run straight away: each is one step in Photoshop's
+    /// History, so the user takes it back there.
+    private func photoshop(_ tool: PhotoshopTool, _ args: [String: Any]) async -> Outcome {
+        guard let ps = context.photoshop else { return Outcome(text: "There is no Photoshop document under the box.") }
+        let label = (args["summary"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            ?? tool.rawValue.replacingOccurrences(of: "photoshop_", with: "").replacingOccurrences(of: "_", with: " ")
+        card.state = .thinking
+        card.working = "Photoshop: \(label.lowercased())…"
+        defer { card.working = nil }
+        let box = self.box.rect
+        let before = Glance.on ? await Glance.screen(self.box) : nil
+        do {
+            let now = try await ActionQueue.run { try await PhotoshopApp.tool(tool, args: args, state: ps, box: box) }
+            if let now { context.photoshop = now }
+            var seen = ""
+            if let before, let p = await Glance.landed(label, before: before, box: self.box, retry: false) {
+                seen = p >= 0.5 ? " It shows on screen." : " Llasso can't see it on screen."
+            }
+            card.log.append("✓ Photoshop: " + label + (seen.hasPrefix(" It") ? " · seen on screen" : ""))
+            actions.append("photoshop: \(label)")
+            let sel = context.photoshop?.selection.map { "the selection is \(Int($0.minX)),\(Int($0.minY)) to \(Int($0.maxX)),\(Int($0.maxY)) px" }
+                ?? "nothing is selected"
+            return Outcome(text: "Done in Photoshop as one History step. Now \(sel).\(seen)")
+        } catch {
+            card.log.append("✕ Photoshop: " + label)
+            Log.write("photoshop: \(tool.rawValue) failed: \(error.localizedDescription)")
+            return Outcome(text: "It didn't work: \(error.localizedDescription)")
         }
     }
 
@@ -393,8 +479,15 @@ final class Job {
             guard let crop = capture?.crop else { return Outcome(text: "There is no image to edit.") }
             card.state = .thinking
             do {
-                // The boxed picture always goes along, so the model has to take pictures.
-                let (image, choice) = try await makeImage(instruction, sources: [crop])
+                // The boxed picture always goes along, so the model has to take pictures. In
+                // Photoshop it is the document's own pixels for the area, at full resolution.
+                var sources = [crop], prompt = instruction
+                if let ps = context.photoshop {
+                    card.working = "Taking \(ps.regionSource) from Photoshop…"
+                    sources = [try await PhotoshopApp.export(ps)]
+                    prompt += "\n\nKeep the framing and aspect ratio exactly as they are, so the result lines up with the original."
+                }
+                let (image, choice) = try await makeImage(prompt, sources: sources)
                 card.working = nil
                 editedImage = image
                 cardP.image = image
@@ -778,9 +871,11 @@ final class Job {
         card.working = d == .run ? "Running…" : "Working…"
         Task {
             do {
+                let before = d.changesScreen && Glance.on ? await Glance.screen(box) : nil
                 let result = try await ActionQueue.run { try await self.act(made.proposal, to: d, context: ctx, app: app,
                                                                              image: made.image, media: made.media) }
                 card.working = nil
+                if let before { check(made.proposal, before: before, result: index) }
                 update(index) { p in
                     p.done = result
                     p.note = nil
@@ -788,6 +883,10 @@ final class Job {
                     if case .replaceInPlace = d { p.destinations = [.undoText(app: ctx.appName ?? "the app"), .copy] }
                     if case .replaceImage(let name) = d { p.destinations = [.undoImage(name: name), .copy, .saveAs] }
                     if case .undoImage = d { p.destinations = [.copy, .saveAs] }
+                    if case .addLayer = d, let placed = Actuator.lastLayer {
+                        p.destinations = [.undoLayer(document: placed.document, layer: placed.layer), .copy, .saveAs]
+                    }
+                    if case .undoLayer = d { p.destinations = [.addLayer(app: ctx.appName ?? "Photoshop"), .copy, .saveAs] }
                 }
                 actions.append(d.label)
                 messages.append(.user("(Llasso note, not from the user) The user chose “\(d.label)”\(index.map { " for result \($0 + 1)" } ?? ""). \(result)"))
@@ -819,7 +918,7 @@ final class Job {
             guard let image else { throw ActionError.failed("The edited image is missing.") }
             let fit = capture.flatMap { NSBitmapImageRep(data: $0.crop) }
                 .map { CGSize(width: $0.pixelsWide, height: $0.pixelsHigh) }
-            return try await Actuator.image(image, to: d, context: ctx, app: app, fit: fit, points: box.rect.size)
+            return try await Actuator.image(image, to: d, context: ctx, app: app, fit: fit, points: box.rect.size, summary: p.summary)
         case .cells(let start, let rows, _): return try await Actuator.cells(start: start, rows: rows, to: d, context: ctx, app: app)
         case .script(let source, _): return try await Actuator.run(script: source)
         case .video, .sound:
@@ -870,12 +969,94 @@ final class Job {
         d?.resume(returning: answer)
     }
 
-    /// Ring a point given as fractions of the boxed image.
-    private func point(x: Double, y: Double, label: String) {
+    /// A point given as fractions of the boxed image, on screen.
+    private func onScreen(_ x: Double, _ y: Double) -> CGPoint {
         let fx = min(1, max(0, x)), fy = min(1, max(0, y))
-        let p = CGPoint(x: box.rect.minX + box.rect.width * fx, y: box.rect.maxY - box.rect.height * fy)
-        Pointer.ring(at: p, label: label)
+        return CGPoint(x: box.rect.minX + box.rect.width * fx, y: box.rect.maxY - box.rect.height * fy)
+    }
+
+    /// Where each ring went: the model's point, and Jev's when a closer look moved it. For tests.
+    private(set) var rings: [(model: CGPoint, jev: CGPoint?, moved: Bool)] = []
+
+    /// Ring the model's point straight away, then let Jev find `target` in the boxed image;
+    /// when a close-up confirms it somewhere else, the ring moves there.
+    private func ring(x: Double, y: Double, label: String, target: String) {
+        let panel = Pointer.ring(at: onScreen(x, y), label: label)
         card.log.append("◎ " + label)
+        rings.append((CGPoint(x: x, y: y), nil, false))
+        let index = rings.count - 1
+        guard Glance.on, let crop = capture?.crop else { return }
+        Task { [weak self] in
+            guard let found = await Glance.find(target, in: crop), let self, !self.closed else { return }
+            let spot = CGPoint(x: found.midX, y: found.midY)
+            self.rings[index].jev = spot
+            guard hypot(spot.x - x, spot.y - y) > 0.04,
+                  let image = NSImage(data: crop)?.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+            // Move only when a close-up of the model's own point says it missed.
+            let model = await Glance.shows(target, at: CGPoint(x: x, y: y), size: found.size, in: image) ?? 1
+            Log.write("ring: \(label.prefix(30)) model at \(String(format: "%.2f,%.2f", x, y)) close-up \(String(format: "%.2f", model)), Jev at \(String(format: "%.2f,%.2f", spot.x, spot.y))")
+            guard model < 0.5, !self.closed else { return }
+            self.rings[index].moved = true
+            Pointer.move(panel, to: self.onScreen(spot.x, spot.y))
+        }
+    }
+
+    /// The model's quick question about the screen, answered by Jev.
+    private func look(_ args: [String: Any]) async -> Outcome {
+        let question = (args["question"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !question.isEmpty else { return Outcome(text: "The look needs a question.") }
+        let kind = args["kind"] as? String ?? "yes_no"
+        card.working = "Looking at the screen…"
+        defer { card.working = nil }
+        let start = Date()
+        guard let now = await Glance.screen(box) else {
+            return Outcome(text: "Llasso couldn't capture the screen. Take a screenshot with the app's tools instead.")
+        }
+        func verdict(_ p: Double) -> String {
+            p >= 0.8 ? "yes" : p <= 0.2 ? "no" : "unsure (\(Int(p * 100))% yes), so check another way"
+        }
+        var answer: String?
+        switch kind {
+        case "choice":
+            let options = (args["options"] as? [String] ?? []).filter { !$0.isEmpty }
+            guard options.count >= 2 else { return Outcome(text: "A choice look needs at least two options.") }
+            if let (picked, p) = await Glance.choose(question, options: options, state: ["The screen now, with the user's box outlined in amber:", Jev.image(now)]) {
+                answer = p >= 0.6 ? picked : "\(picked), but only \(Int(p * 100))% sure, so check another way"
+            }
+        case "changed":
+            if let first = capture?.screen, let p = await Glance.yes(question, state: [
+                "The screen when the user drew the box, outlined in amber:", Jev.image(first),
+                "The screen now:", Jev.image(now)]) { answer = verdict(p) }
+        default:
+            if let p = await Glance.yes(question, state: ["The screen now, with the user's box outlined in amber:", Jev.image(now)]) {
+                answer = verdict(p)
+            }
+        }
+        let seconds = String(format: "%.1f", Date().timeIntervalSince(start))
+        Log.write("look: \(kind) \(question.prefix(60)) → \(answer ?? "no answer") in \(seconds)s")
+        guard let answer else {
+            return Outcome(text: "The quick look didn't answer. Take a screenshot with the app's tools instead.")
+        }
+        card.log.append("◌ \(question) \(answer.prefix(while: { $0 != "," }))")
+        return Outcome(text: "Looked at the screen: \(answer).")
+    }
+
+    /// After a card destination changed the app, look for the change and say on the card.
+    private func check(_ p: Proposal, before: Data, result index: Int?) {
+        update(index) { $0.seen = .looking }
+        var change = p.summary.ifEmpty("the change on the card")
+        switch p {
+        case .text(let text, _): change += ". The changed text should now read: \"\(text.prefix(300))\""
+        case .cells(let start, let rows, _):
+            change += ". Cells from \(start ?? "the selection") should now hold: " + rows.prefix(4).map { $0.joined(separator: ", ") }.joined(separator: "; ")
+        default: break
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            let p = await Glance.landed(change, before: before, box: self.box)
+            Log.write("check: \(change.prefix(60)) → \(p.map { String(format: "%.2f", $0) } ?? "no answer")")
+            self.update(index) { $0.seen = p.map { $0 >= 0.5 ? .shows : .missing } }
+        }
     }
 
     /// Tool arguments in a few readable lines for the approval step.

@@ -101,14 +101,22 @@ final class Controller {
 
     /// For the self-test: start a job without the prompt.
     func startTestJob(box: (rect: CGRect, screen: NSScreen), context: ScreenContext, prompt: String, crop: Data,
-                      integration: Integration? = nil, approveAll: Bool = false) -> Job {
+                      screenImage: Data? = nil, integration: Integration? = nil, approveAll: Bool = false) -> Job {
         let job = Job(frontApp: nil, box: box, verb: nil, context: context, integration: integration, speaker: speaker)
         if approveAll { job.approveAllForTest() }
         job.onClose = { [weak self] j in self?.jobs.removeAll { $0 === j } }
         jobs.append(job)
-        let capture = Task<Capture?, Never> { Capture(crop: crop, screen: crop) }
+        let capture = Task<Capture?, Never> { Capture(crop: crop, screen: screenImage ?? crop) }
         let mcp: Task<MCPClient?, Never>? = integration.map { i in Task { await Integrations.shared.client(for: i) } }
         Task { await job.start(prompt: prompt, spoken: false, captureTask: capture, mcpTask: mcp) }
+        return job
+    }
+
+    /// For the check test: a job over a real app that hasn't asked the model anything.
+    func makeTestJob(frontApp: NSRunningApplication?, box: (rect: CGRect, screen: NSScreen), context: ScreenContext) -> Job {
+        let job = Job(frontApp: frontApp, box: box, verb: nil, context: context, integration: nil, speaker: speaker)
+        job.onClose = { [weak self] j in self?.jobs.removeAll { $0 === j } }
+        jobs.append(job)
         return job
     }
 
@@ -385,6 +393,7 @@ final class Controller {
                 self.context = ctx
                 self.pill.tag = ctx.tag + " · " + ctx.kind.rawValue
                 self.pill.tagKnown = ctx.documentPath != nil || ctx.url != nil || ctx.integration != nil || ctx.source != nil
+                    || ctx.photoshop != nil
             }
         }
         connectIntegration(for: app)

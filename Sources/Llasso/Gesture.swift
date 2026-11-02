@@ -1,12 +1,13 @@
 import AppKit
 import CoreGraphics
+import LlassoKit
 
-/// Hold ⌘ and drag to draw a box. The drag goes to Llasso and never reaches the app under it.
-/// A ⌘-click that doesn't move is handed back to the app unchanged, so ⌘-click still opens
-/// links in new tabs and adds to selections. Presses in the menu bar are left alone, where
-/// ⌘-drag rearranges the icons.
+/// Hold the keys chosen in Settings (⌘ unless changed) and drag to draw a box. The drag goes
+/// to Llasso and never reaches the app under it. A click with those keys that doesn't move is
+/// handed back to the app unchanged, so ⌘-click still opens links in new tabs and adds to
+/// selections. Presses in the menu bar are left alone, where ⌘-drag rearranges the icons.
 /// Needs Accessibility permission; without it the menu and ⌃⌥S still work.
-final class CommandDrag {
+final class BoxDrag {
     /// Points in AppKit global coordinates. `onStart` returns false when Llasso can't take a box now.
     var onStart: ((CGPoint) -> Bool)?
     var onMove: ((CGPoint) -> Void)?
@@ -17,7 +18,7 @@ final class CommandDrag {
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
 
-    /// How far the pointer moves before a ⌘-press counts as a drag rather than a click.
+    /// How far the pointer moves before a press counts as a drag rather than a click.
     static let dragDistance: CGFloat = 4
     /// Marks the clicks Llasso hands back, so the tap lets them through.
     private static let replayed: Int64 = 0x4C4C5353
@@ -35,7 +36,7 @@ final class CommandDrag {
                                            options: .defaultTap, eventsOfInterest: CGEventMask(mask),
                                            callback: { _, type, event, info in
             guard let info else { return Unmanaged.passUnretained(event) }
-            let watcher = Unmanaged<CommandDrag>.fromOpaque(info).takeUnretainedValue()
+            let watcher = Unmanaged<BoxDrag>.fromOpaque(info).takeUnretainedValue()
             return watcher.handle(type: type, event: event) ? Unmanaged.passUnretained(event) : nil
         }, userInfo: me) else { return false }
         tap = port
@@ -53,7 +54,7 @@ final class CommandDrag {
             return true
         case .leftMouseDown:
             guard event.getIntegerValueField(.eventSourceUserData) != Self.replayed,
-                  event.flags.contains(.maskCommand),
+                  Settings.shared.dragKeys.matches(event.flags),
                   !Self.inMenuBar(event.location),
                   let down = event.copy() else { return true }
             tracking = .pending(start: event.location, down: down)
@@ -94,7 +95,7 @@ final class CommandDrag {
         }
     }
 
-    /// Hand a ⌘-press back to the app: the held press, then the release if there is one.
+    /// Hand a press back to the app: the held press, then the release if there is one.
     private func replay(up: CGEvent? = nil) {
         guard case .pending(_, let down) = tracking else { return }
         tracking = .none

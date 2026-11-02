@@ -53,6 +53,8 @@ public struct ScreenContext: Sendable, Equatable {
     }
     /// The spreadsheet selection, when the app is Numbers or Excel.
     public var sheet: SheetSelection?
+    /// The open Photoshop document and its selection, when Photoshop answered.
+    public var photoshop: PhotoshopState?
     /// Name of the app's connected MCP server, when Llasso has one running for it.
     public var integration: String?
     /// Set when the app has a known MCP server that is not set up yet.
@@ -78,7 +80,10 @@ public struct ScreenContext: Sendable, Equatable {
     public var tag: String {
         var bits: [String] = []
         if let appName { bits.append(appName) }
-        if let documentPath {
+        if let photoshop {
+            bits.append(photoshop.document)
+            if photoshop.selection != nil { bits.append("your selection") }
+        } else if let documentPath {
             bits.append((documentPath as NSString).lastPathComponent)
         } else if let url, let host = URL(string: url)?.host {
             bits.append(host + (URL(string: url)?.path ?? ""))
@@ -165,6 +170,52 @@ public enum Brief {
         }
     }
 
+    /// Added when the box is over an app whose own tools edit its file, such as Paper, so the
+    /// box decides what changes and nothing needs selecting.
+    public static func canvasGuide(app: String) -> String {
+        """
+        Working in \(app) through its own tools:
+        - The box shows what to change. Read the boxed image, then find that part of the file \
+        with \(app)'s tools: search for the words you can read (in Paper, find_nodes with \
+        textValue, using * wildcards when the words may be split or styled), check what is \
+        selected, or read the artboard the box sits on. Never ask the user to select it first.
+        - When several parts match, change the one under the box: compare its surroundings and \
+        artboard name with the screen image, and take a screenshot of the candidates when unsure.
+        - Make the change in the file itself (in Paper, set_text_content for words, keeping the \
+        node's formatting, and update_styles for looks). propose_text is not offered here, \
+        because a paste can't reach the design.
+        - Work without commentary: the card already lists each step. Write only the closing \
+        sentence, naming what you changed and on which artboard.
+        """
+    }
+
+    /// Added when Jev can look at the screen for Llasso.
+    public static let lookGuide = """
+    Checking the screen: the look tool answers one closed question about the screen in under a \
+    second. Use it to confirm a change shows, or to see what is selected or showing, instead of \
+    taking a screenshot. After a change in an app, Llasso looks at the screen itself and says in \
+    the tool result whether the change shows; take a screenshot only when you need detail that \
+    can't give, or when it says the change doesn't show where it should be on screen.
+    """
+
+    /// Sent once after a change in such an app, before the request counts as done.
+    public static func widerCheck(app: String) -> String {
+        """
+        Before this request is done, check whether the same change belongs anywhere else in \
+        this \(app) file. Search every page for places that still carry the old version: the \
+        same words (find_nodes with textValue, with * wildcards for case and spacing), the same \
+        colour or style value (find_nodes with filters), or copies of the same component. Ignore \
+        anything that only looks alike by chance, and anything the request ruled out.
+        - If you find some, call ask_user (allowed even if you asked before). Say you changed \
+        the one in the box, then how many others still carry the old version and where, by \
+        artboard name, for example: "I've changed the one in the box. 3 other artboards still \
+        say Overviw: Home, Pricing and About. Change those too?" Offer two answers: "Change all N", \
+        where N is the number you found, and "Leave them". If the user agrees, change them the same way and finish with one \
+        sentence saying what changed.
+        - If you find none, finish with one short sentence saying nothing else needed changing.
+        """
+    }
+
     /// The text that goes with the two images in the first user message.
     public static func userText(prompt: String, verb: Verb?, context: ScreenContext) -> String {
         var lines: [String] = []
@@ -189,6 +240,13 @@ public enum Brief {
         if let sheet = context.sheet {
             lines.append("- Spreadsheet selection (\(sheet.app.rawValue)) \(sheet.address):")
             for row in sheet.values.prefix(60) { lines.append("  | " + row.joined(separator: " | ")) }
+        }
+        if let ps = context.photoshop {
+            func px(_ r: CGRect) -> String { "\(Int(r.minX)),\(Int(r.minY)) to \(Int(r.maxX)),\(Int(r.maxY)) px (\(Int(r.width)) × \(Int(r.height)))" }
+            lines.append("- Photoshop document: \(ps.document), \(Int(ps.size.width)) × \(Int(ps.size.height)) px, active layer \"\(ps.layer)\"")
+            lines.append("- Photoshop selection: " + (ps.selection.map(px) ?? "nothing selected"))
+            if let b = ps.boxed { lines.append("- The box covers \(px(b)) of the picture") }
+            lines.append("- edit_image works on \(ps.regionSource) and its result goes back into Photoshop as a new layer")
         }
         if let v = context.source {
             lines.append("- Code behind the box: \(v.root) (\(v.how))" + (v.file.map { ", file \($0)" } ?? ""))

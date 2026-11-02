@@ -358,6 +358,9 @@ struct ProposalCard {
     var destinations: [Destination]
     /// Set once a destination has been used: what happened.
     var done: String?
+    /// What Llasso saw on screen after the change, when Jev looked.
+    var seen: Seen?
+    enum Seen { case looking, shows, missing }
     /// Why an automatic step didn't happen, shown quietly above the chips.
     var note: String?
     /// The question the first chip answers ("Replace the boxed text in Notes with this?").
@@ -655,6 +658,13 @@ struct CardView: View {
             }
             if let done = p.done {
                 Text("✓ " + done).font(.system(size: 13)).foregroundColor(.llPositive)
+            }
+            switch p.seen {
+            case .looking?: Text("Looking at the screen…").font(.system(size: 12)).foregroundColor(.llSub)
+            case .shows?: Text("Llasso can see the change on screen.").font(.system(size: 12)).foregroundColor(.llSub)
+            case .missing?: Text("Llasso can't see this change on screen. Check it, and use Undo if it went wrong.")
+                    .font(.system(size: 12)).foregroundColor(.llDanger)
+            case nil: EmptyView()
             }
             if let note = p.note, p.done == nil {
                 Text(note).font(.system(size: 12)).foregroundColor(.llSub)

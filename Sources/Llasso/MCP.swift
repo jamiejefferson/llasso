@@ -244,6 +244,10 @@ struct Integration: Identifiable {
     var offered: Set<String>? = nil
     /// Tools that only change what is on view (open, navigate, scroll), so they run without asking.
     var safe: Set<String> = []
+    /// Tools that change what is already in the app's file. Set for apps whose content a paste
+    /// can't reach (a design canvas): the box's text changes go through these tools, and after
+    /// one runs Llasso checks whether the same change belongs elsewhere in the file.
+    var edits: Set<String> = []
 
     func matches(bundleID: String?, appName: String?) -> Bool {
         if let b = bundleID, bundleIDs.contains(b) { return true }
@@ -295,7 +299,8 @@ final class Integrations: ObservableObject {
                       "finish_working_on_nodes"],
             // Edits Paper can undo run without asking; deleting still asks.
             safe: ["write_html", "create_artboard", "duplicate_nodes", "update_styles", "set_text_content",
-                   "rename_nodes", "move_nodes"]))
+                   "rename_nodes", "move_nodes"],
+            edits: ["set_text_content", "update_styles"]))
         let hatch = "/Applications/Hatch.app/Contents/Resources/hatch-mcp"
         list.append(Integration(
             name: "Hatch", bundleIDs: ["app.hatch.browser"], appNames: ["hatch"],
